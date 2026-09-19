@@ -74,13 +74,26 @@ def _build_test_drive(
     return details, state_text
 
 
-# Below these the aircraft is parked or taxiing and the numbers are noise.
-_MIN_MACH = 0.05
+# Mach only says something once an aircraft is genuinely fast. Parked on the
+# runway the game reports M=0.00, and a helicopter cruises around M=0.05 --
+# measured live in an AH-64A, right on the old threshold, so the figure
+# flickered in and out of the presence while saying nothing. Airspeed is the
+# meaningful number down there and is shown regardless.
+_MIN_MACH = 0.30
 _MIN_IAS_KPH = 20.0
 
 
-def _build_vehicle_state(state: GameState, show_flight_data: bool) -> str:
+def _kill_suffix(state: GameState, show_kills: bool) -> str:
+    if not show_kills or state.kills <= 0:
+        return ""
+    return f"{state.kills} kill" + ("s" if state.kills != 1 else "")
+
+
+def _build_vehicle_state(
+    state: GameState, show_flight_data: bool, show_kills: bool = True
+) -> str:
     vehicle = _vehicle_or_fallback(state.vehicle_name)
+    kills = _kill_suffix(state, show_kills)
 
     if state.army == Army.AIR and show_flight_data and state.flight is not None:
         bits: list[str] = []
@@ -92,8 +105,10 @@ def _build_vehicle_state(state: GameState, show_flight_data: bool) -> str:
         if state.flight.ias_kph is not None and state.flight.ias_kph >= _MIN_IAS_KPH:
             bits.append(f"{round(state.flight.ias_kph)} km/h IAS")
         if bits:
-            return _SEPARATOR.join([vehicle, *bits])
+            return _SEPARATOR.join([vehicle, *bits, *( [kills] if kills else [] )])
 
+    if kills:
+        return _SEPARATOR.join([vehicle, kills])
     return vehicle
 
 
@@ -106,7 +121,12 @@ def _regime_label(state: GameState, dogfight_detection: bool) -> str:
 
 
 def _build_in_match(
-    state: GameState, *, show_map: bool, show_flight_data: bool, dogfight_detection: bool
+    state: GameState,
+    *,
+    show_map: bool,
+    show_flight_data: bool,
+    dogfight_detection: bool,
+    show_kills: bool = True,
 ) -> tuple[str, str]:
     regime = _regime_label(state, dogfight_detection)
 
@@ -124,7 +144,7 @@ def _build_in_match(
     else:
         details = ""
 
-    state_text = _build_vehicle_state(state, show_flight_data)
+    state_text = _build_vehicle_state(state, show_flight_data, show_kills)
     return details, state_text
 
 
@@ -141,6 +161,7 @@ def build_presence(
     show_vehicle_image: bool = True,
     show_flight_data: bool = True,
     dogfight_detection: bool = True,
+    show_kills: bool = True,
     large_image: str = "logo",
 ) -> PresencePayload:
     """Build a ``PresencePayload`` from a ``GameState`` snapshot. Pure function."""
@@ -160,6 +181,7 @@ def build_presence(
             show_map=show_map,
             show_flight_data=show_flight_data,
             dogfight_detection=dogfight_detection,
+            show_kills=show_kills,
         )
     else:
         details, state_text = _build_unknown(state)

@@ -126,6 +126,17 @@ class WarThunderClient:
         """GET /map_info.json -- minimap bounds and grid metadata."""
         return self._get_json("/map_info.json")
 
+    def hudmsg(self, last_event_id: int = 0, last_damage_id: int = 0) -> dict | None:
+        """GET /hudmsg -- the kill and damage feed.
+
+        Both query parameters are mandatory: the endpoint answers HTTP 400
+        without them. Passing the highest id already seen returns only newer
+        entries, which is how the caller avoids counting a kill twice.
+        """
+        return self._get_json(
+            f"/hudmsg?lastEvt={int(last_event_id)}&lastDmg={int(last_damage_id)}"
+        )
+
     def map_obj(self) -> list | None:
         """GET /map_obj.json -- markers on the minimap.
 

@@ -1,0 +1,6 @@
+{"events":[],
+ "damage":[
+  {"id": 1, "msg": "^LVRTS^ Chawannua (F-4S Phantom II) set afire [ai] MiG-15bis", "sender": "", "enemy": false, "mode": "", "time": 118},
+  {"id": 2, "msg": "^LVRTS^ Chawannua (F-4S Phantom II) destroyed [ai] MiG-15bis", "sender": "", "enemy": false, "mode": "", "time": 122},
+  {"id": 3, "msg": "Wingman42 (Bf 109 G-6) destroyed [ai] Yak-9", "sender": "", "enemy": false, "mode": "", "time": 130}
+ ]}

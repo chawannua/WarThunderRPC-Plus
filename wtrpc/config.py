@@ -46,6 +46,14 @@ class Config:
     """Either an asset key uploaded to your Discord application, or a plain
     https URL. A key only resolves against the application that owns it, so a
     new client_id needs either its own uploaded `logo` asset or a URL here."""
+    player_name: str = ""
+    """Your exact in-game name, used to count your kills from the HUD feed.
+
+    /hudmsg carries no identity at all, so without this the player can only be
+    guessed from the vehicle model -- which picks a stranger the moment anyone
+    else drives the same one. Left empty, the kill counter stays off rather
+    than risk showing someone else's score as yours."""
+    show_kills: bool = True
     poll_interval: float = 3.0
     min_update_interval: float = 15.0
     show_map: bool = True

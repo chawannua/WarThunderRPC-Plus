@@ -32,14 +32,27 @@ class Activity(str, Enum):
 class AirState(str, Enum):
     """Flight regime derived from a rolling window of aircraft telemetry.
 
-    ``DOGFIGHTING`` and ``MANEUVERING`` look identical in the instruments --
-    both are sustained high-G, banked, fast-turning flight. What separates
-    them is whether anyone is actually there: pulling 9G to break away from a
-    fight five kilometres behind you is not a dogfight, and calling it one is
-    simply wrong. The split needs the position of the nearest hostile.
+    Three of these describe combat and are told apart by two independent
+    questions -- is the aircraft being thrown around, and is anyone close?
+
+    ===============  ================  ==================
+    state            hard manoeuvring  hostile within 2.5 km
+    ===============  ================  ==================
+    DOGFIGHTING      yes               yes
+    MANEUVERING      yes               no
+    ENGAGED          no                yes
+    ===============  ================  ==================
+
+    All three were observed in one play session. Pulling 11.8G with the
+    nearest enemy 30 km away is a break turn, not a dogfight. Holding station
+    480 m from an enemy fighter for 25 seconds at Mach 1.4 without turning
+    hard is a firing pass, not aerobatics. Reporting either as "Dogfighting"
+    is simply wrong, and the instruments alone cannot tell them apart -- the
+    position of the nearest hostile is what separates them.
     """
 
     DOGFIGHTING = "dogfighting"
+    ENGAGED = "engaged"
     MANEUVERING = "maneuvering"
     SUPERSONIC = "supersonic"
     CLIMBING = "climbing"
@@ -96,6 +109,8 @@ class GameState:
     """Match mode label, e.g. ``Air Domination``. Empty when unknown."""
     flight: Flight = field(default_factory=Flight)
     air_state: AirState = AirState.UNKNOWN
+    kills: int = 0
+    """Confirmed kills by the player in this match, 0 when not counted."""
     match_started_at: int | None = None
     """Unix timestamp the current activity began, for the Discord elapsed timer."""
 

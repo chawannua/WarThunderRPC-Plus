@@ -22,6 +22,7 @@ from pathlib import Path
 from . import config as config_module
 from .contacts import looks_like_a_match, nearest_hostile_km
 from .flight import FlightAnalyzer
+from .killfeed import KillFeed
 from .models import Activity, AirState, Army, Flight, GameState
 from .modes import classify_mode
 from .naming import format_vehicle, is_placeholder
@@ -150,6 +151,9 @@ class Poller:
             connect_timeout=cfg.connect_timeout, read_timeout=cfg.read_timeout
         )
         self.analyzer = FlightAnalyzer()
+        self.killfeed = KillFeed(
+            lambda e, d: self.client.hudmsg(e, d), player_name=cfg.player_name
+        )
         self.activity = Activity.UNKNOWN
         self.activity_since: int | None = None
         self.map_name = ""
@@ -240,6 +244,10 @@ class Poller:
         # flying; only a return to the hangar or a load screen really ends it.
         if activity not in _FLYING_ACTIVITIES or previous not in _FLYING_ACTIVITIES:
             self.analyzer.reset()
+        if activity is Activity.IN_MATCH:
+            # HUD message ids restart with each match, so a stale cursor would
+            # skip the whole new feed and report zero kills all match.
+            self.killfeed.reset()
 
     def poll(self) -> GameState | None:
         """Build one snapshot, or ``None`` when War Thunder is unreachable.
@@ -329,6 +337,12 @@ class Poller:
             self.analyzer.add(flight, time.monotonic())
             air_state = self.analyzer.state()
 
+        kills = 0
+        if activity is Activity.IN_MATCH and self.cfg.show_kills:
+            self.killfeed.identify_player(vehicle_id)
+            self.killfeed.poll()
+            kills = self.killfeed.kills
+
         state = GameState(
             activity=activity,
             army=army,
@@ -338,6 +352,7 @@ class Poller:
             mode=classify_mode(objective, army) if in_map else "",
             flight=flight,
             air_state=air_state,
+            kills=kills,
             match_started_at=self.activity_since,
         )
         self.last_state = state
@@ -403,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:
                     show_vehicle_image=cfg.show_vehicle_image,
                     show_flight_data=cfg.show_flight_data,
                     dogfight_detection=cfg.dogfight_detection,
+                    show_kills=cfg.show_kills,
                     large_image=cfg.large_image,
                 )
             )

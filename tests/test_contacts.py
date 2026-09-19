@@ -188,8 +188,14 @@ class TestDogfightVersusManeuvering:
             )
         assert analyzer.state() == AirState.DOGFIGHTING
 
-    def test_contact_alone_without_manoeuvring_is_not_a_dogfight(self):
-        """Flying straight past someone is not fighting them."""
+    def test_contact_without_manoeuvring_is_engaged_not_a_dogfight(self):
+        """Close to someone but flying steadily: a firing pass, not a turn fight.
+
+        Measured live: 25 seconds between 0.5 and 2.6 km of an enemy fighter
+        at Mach 1.4 while pulling barely over 1G. Calling that a dogfight
+        overstates it; calling it "Supersonic" says nothing about the enemy
+        being right there.
+        """
         analyzer = FlightAnalyzer()
         for t in range(6):
             analyzer.add(
@@ -202,7 +208,52 @@ class TestDogfightVersusManeuvering:
                 ),
                 timestamp=float(t),
             )
+        assert analyzer.state() == AirState.ENGAGED
+
+    def test_engaged_outranks_supersonic(self):
+        """A bandit at knife range matters more than the airspeed indicator."""
+        analyzer = FlightAnalyzer()
+        for t in range(6):
+            analyzer.add(
+                Flight(mach=1.4, load_factor=1.1, nearest_hostile_km=0.48),
+                timestamp=float(t),
+            )
+        assert analyzer.state() == AirState.ENGAGED
+
+    def test_steady_flight_with_nobody_near_is_not_engaged(self):
+        analyzer = FlightAnalyzer()
+        for t in range(6):
+            analyzer.add(
+                Flight(
+                    mach=0.6,
+                    load_factor=1.0,
+                    roll_deg=0.0,
+                    vertical_speed_ms=0.0,
+                    nearest_hostile_km=18.0,
+                ),
+                timestamp=float(t),
+            )
         assert analyzer.state() == AirState.CRUISING
+
+    def test_all_three_combat_states_from_the_same_g_trace(self):
+        """The three-way split in one table: identical manoeuvring, different
+        company. This is the whole point of tracking contact range."""
+        def run(gs: list[float], hostile_km: float | None) -> AirState:
+            analyzer = FlightAnalyzer()
+            for t, g in enumerate(gs):
+                analyzer.add(
+                    Flight(mach=0.9, load_factor=g, nearest_hostile_km=hostile_km),
+                    timestamp=float(t),
+                )
+            return analyzer.state()
+
+        hard = [5.2, 4.8, 6.1, 5.5, 4.9, 5.8]
+        gentle = [1.0, 1.1, 0.9, 1.2, 1.0, 1.1]
+
+        assert run(hard, 1.2) == AirState.DOGFIGHTING
+        assert run(hard, 30.0) == AirState.MANEUVERING
+        assert run(gentle, 1.2) == AirState.ENGAGED
+        assert run(gentle, 30.0) == AirState.CRUISING
 
 
 class TestMatchMarkers:

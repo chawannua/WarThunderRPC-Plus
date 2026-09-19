@@ -35,6 +35,7 @@ _ALL_FIELDS = (
 
 _LABELS: dict[AirState, str] = {
     AirState.DOGFIGHTING: "Dogfighting",
+    AirState.ENGAGED: "Engaged",
     AirState.MANEUVERING: "Maneuvering",
     AirState.SUPERSONIC: "Supersonic",
     AirState.CLIMBING: "Climbing",
@@ -80,14 +81,19 @@ class FlightAnalyzer:
         if all(_all_fields_none(s) for s in samples):
             return AirState.UNKNOWN
 
+        in_contact = self._hostile_in_contact(samples)
+
         if self._is_maneuvering_hard(samples):
             # Same instruments, two very different situations. Only call it a
             # dogfight when a hostile is actually close enough to be fighting.
-            return (
-                AirState.DOGFIGHTING
-                if self._hostile_in_contact(samples)
-                else AirState.MANEUVERING
-            )
+            return AirState.DOGFIGHTING if in_contact else AirState.MANEUVERING
+
+        if in_contact:
+            # Not throwing the aircraft around, but somebody is right there.
+            # Observed live: 25 seconds spent between 0.5 and 2.6 km of an
+            # enemy fighter at Mach 1.4 while pulling barely more than 1G --
+            # a firing pass, which "Supersonic" alone does not convey.
+            return AirState.ENGAGED
 
         latest_mach = samples[-1].mach
         if latest_mach is not None and latest_mach >= _SUPERSONIC_MACH:
