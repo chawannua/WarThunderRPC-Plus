@@ -586,3 +586,55 @@ class TestAgainstARealCapture:
         for rgb in [(80, 130, 55), (60, 110, 40), (95, 140, 70), (110, 160, 90)]:
             img = Image.new("RGB", (2, 2), rgb)
             assert not any(isolate_hud(img).convert("L").tobytes()), f"{rgb} leaked"
+
+
+class TestWarningColouredRows:
+    """The HUD is not only green: rows turn red to mean "not ready".
+
+    Captured live on an F-16C: `THR 110 % WEP` while war emergency power was
+    engaged, and `AAM 0:29[27]` while that group reloaded -- which also lost
+    its ">" marker at the same moment. Measured rgb(199, 36, 50).
+    """
+
+    @pytest.fixture
+    def warning_hud(self):
+        path = (
+            pathlib.Path(__file__).parent / "fixtures" / "weapon_hud_real_warning.png"
+        )
+        if not path.exists():
+            pytest.skip("warning HUD capture fixture not present")
+        return Image.open(path).convert("RGB")
+
+    def test_green_rows_are_isolated_by_default(self, warning_hud):
+        rows = find_text_rows(isolate_hud(warning_hud))
+        assert len(rows) >= 10
+
+    def test_opting_in_recovers_the_red_rows_too(self, warning_hud):
+        plain = isolate_hud(warning_hud)
+        with_warning = isolate_hud(warning_hud, include_warning=True)
+        lit_plain = sum(1 for v in plain.convert("L").tobytes() if v)
+        lit_warn = sum(1 for v in with_warning.convert("L").tobytes() if v)
+        assert lit_warn > lit_plain, "red rows should add pixels"
+
+    def test_warning_colour_is_off_by_default(self):
+        """Red is far less distinctive against a game image than pure green.
+
+        Leaving it on produced false positives on the background fixture, and
+        it buys nothing for reading the selection: a selected group is always
+        green, because it turns red exactly when it stops being selected.
+        """
+        red = Image.new("RGB", (2, 2), (199, 36, 50))
+        assert not any(isolate_hud(red).convert("L").tobytes())
+        assert any(isolate_hud(red, include_warning=True).convert("L").tobytes())
+
+    def test_explosion_orange_is_rejected_even_when_opted_in(self):
+        for rgb in [(230, 140, 40), (255, 160, 60), (200, 120, 30)]:
+            img = Image.new("RGB", (2, 2), rgb)
+            assert not any(
+                isolate_hud(img, include_warning=True).convert("L").tobytes()
+            ), f"{rgb} leaked"
+
+    def test_a_reloading_row_is_not_reported_as_selected(self):
+        """`AAM 0:29[27]` has no marker while it reloads, so it is not a
+        selection, and its countdown is not a quantity."""
+        assert selected_weapons(["   AAM      0:29[27]"]) == []

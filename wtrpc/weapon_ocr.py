@@ -120,6 +120,20 @@ _UNINTERESTING_GROUPS = frozenset(
 )
 
 
+#: The HUD also draws rows in red to mean "not ready" -- a reloading weapon
+#: ("AAM 0:29[27]"), or WEP engaged. Measured rgb(199, 36, 50) to
+#: rgb(210, 47, 59).
+#:
+#: Off by default, deliberately. Red is far less distinctive against a game
+#: image than pure green is -- dark reds occur naturally in terrain, fire and
+#: tracers, and switching it on produced false positives on the background
+#: fixture where green-only produces exactly none. Nothing is lost for the
+#: purpose this module exists for, because a SELECTED weapon is always green:
+#: a group that starts reloading loses its ">" marker and turns red at the
+#: same moment. Turn it on only to read the not-ready rows themselves.
+_WARNING_MAX_RATIO = 0.45
+
+
 def _is_telemetry_label(group: str) -> bool:
     head = group.strip().upper().rstrip("0123456789")
     return head in _TELEMETRY_LABELS
@@ -228,6 +242,7 @@ def isolate_hud(
     min_green: int = 80,
     dominance: int = 40,
     max_ratio: float = 0.45,
+    include_warning: bool = False,
 ) -> Image.Image:
     """Isolate HUD-green pixels into a binary (mode "L") image.
 
@@ -256,17 +271,27 @@ def isolate_hud(
     g_px = g_data.tobytes()
     b_px = b_data.tobytes()
 
-    out_px = bytes(
-        255
+    def _is_hud(r: int, g: int, b: int) -> bool:
         if (
             g >= min_green
             and g - r >= dominance
             and g - b >= dominance
             and r <= g * max_ratio
             and b <= g * max_ratio
-        )
-        else 0
-        for r, g, b in zip(r_px, g_px, b_px)
+        ):
+            return True
+        if include_warning and (
+            r >= min_green
+            and r - g >= dominance
+            and r - b >= dominance
+            and g <= r * _WARNING_MAX_RATIO
+            and b <= r * _WARNING_MAX_RATIO
+        ):
+            return True
+        return False
+
+    out_px = bytes(
+        255 if _is_hud(r, g, b) else 0 for r, g, b in zip(r_px, g_px, b_px)
     )
     out = Image.frombytes("L", rgb.size, out_px)
     return out
