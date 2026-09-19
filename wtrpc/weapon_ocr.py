@@ -93,6 +93,43 @@ _SELECTED_MARKERS = {">", "s", "S", "»"}  # '>' itself, plus 's'/'S'/'»'
 _UNSELECTED_MARKERS = {"-", "_", "‐", "—"}  # '-', '_', '‐', '—'
 
 
+#: A quantity column: "40", "512", "4/4", "4[L]", "4/4[L]", "8/4(L)".
+#:
+#: Brackets and parentheses are both real -- an F-16C renders "4/4[L]" and an
+#: F-4S "8/4(L)". Letters that OCR habitually substitutes for digits (O for 0,
+#: l/I for 1) are accepted, which is the entire point of reading pixels, but
+#: at least one genuine digit must be present so a word like "BOMB" can never
+#: be mistaken for a count.
+_COUNT_RE = re.compile(
+    r"^(?=[^\d]*\d)[\dOolI]+(?:/[\dOolI]+)?(?:[\[(][A-Za-z][\])])?$", re.ASCII
+)
+
+#: Rows that are instrument readings, not weapons. Trailing digits are
+#: stripped before comparison so OIL1/ENGN2 match OIL/ENGN.
+_TELEMETRY_LABELS = frozenset(
+    {"THR", "IAS", "SPD", "TAS", "ALT", "RALT", "FUEL", "OIL", "ENGN",
+     "RPM", "TEMP", "WEP", "M", "G"}
+)
+
+#: Groups deliberately left out of the presence. The cannon is selected
+#: essentially all the time, so reporting it says nothing about what the
+#: pilot has actually chosen; countermeasures are not weapons at all.
+_UNINTERESTING_GROUPS = frozenset(
+    {"CNN", "CNN AUTO", "CANNON", "GUN", "GUNS", "MG", "MGUN",
+     "FLR", "FLARE", "FLARES", "CHFF", "CHAFF"}
+)
+
+
+def _is_telemetry_label(group: str) -> bool:
+    head = group.strip().upper().rstrip("0123456789")
+    return head in _TELEMETRY_LABELS
+
+
+def is_interesting(line: "WeaponLine") -> bool:
+    """False for groups not worth putting in a Discord status."""
+    return line.group.strip().upper() not in _UNINTERESTING_GROUPS
+
+
 def parse_weapon_line(text: str) -> WeaponLine | None:
     """Parse one line of OCR text from the weapon HUD block.
 
@@ -112,35 +149,76 @@ def parse_weapon_line(text: str) -> WeaponLine | None:
     if not stripped:
         return None
 
-    tokens = [t for t in re.split(r"\s{2,}", stripped) if t.strip()]
+    tokens = [t for t in stripped.split() if t]
     if not tokens:
         return None
 
-    marker = tokens[0]
-    if marker in _SELECTED_MARKERS:
+    # The marker is optional. A real capture shows three states, not two:
+    # ">" selected, "-" unselected, and no marker at all for a weapon that is
+    # carried but not currently cycled to (e.g. "   AGM  4[L]  AGM-88C").
+    # Dropping unmarked lines threw those away entirely.
+    selected = False
+    had_marker = False
+    if tokens[0] in _SELECTED_MARKERS:
         selected = True
-    elif marker in _UNSELECTED_MARKERS:
-        selected = False
-    else:
+        had_marker = True
+        tokens = tokens[1:]
+    elif tokens[0] in _UNSELECTED_MARKERS:
+        had_marker = True
+        tokens = tokens[1:]
+
+    if not tokens:
         return None
 
-    rest = tokens[1:]
-    if not rest:
+    # Anchor on the count rather than on column spacing. Group names can be
+    # two words ("CNN AUTO", "AG AUTO") separated by a single space, so
+    # splitting on runs of spaces put the group and the count in one field
+    # and shifted every column after it.
+    count_index = next(
+        (i for i, tok in enumerate(tokens) if _COUNT_RE.match(tok)), None
+    )
+
+    if count_index == 0:
+        # A bare quantity with no group in front of it is not a weapon row.
         return None
 
-    group = rest[0]
-    count = rest[1] if len(rest) > 1 else ""
-    name = " ".join(rest[2:]) if len(rest) > 2 else ""
+    if count_index is None:
+        # Some groups carry no quantity at all ("> GUN"). Accept those only
+        # when a marker vouched for the row, otherwise any stray line of text
+        # would parse as a weapon.
+        if not had_marker:
+            return None
+        group = " ".join(tokens)
+        if _is_telemetry_label(group):
+            return None
+        return WeaponLine(selected=selected, group=group, count="", name="")
+
+    group = " ".join(tokens[:count_index])
+    if _is_telemetry_label(group):
+        return None
+
+    count = tokens[count_index]
+    name = " ".join(tokens[count_index + 1 :])
     return WeaponLine(selected=selected, group=group, count=count, name=name)
 
 
-def selected_weapons(lines: list[str]) -> list[WeaponLine]:
-    """Parse ``lines`` and return only the selected weapon groups, in order."""
+def selected_weapons(
+    lines: list[str], *, include_uninteresting: bool = False
+) -> list[WeaponLine]:
+    """Parse ``lines`` and return the selected weapon groups, in order.
+
+    The cannon and countermeasures are filtered out by default: the gun is
+    selected almost permanently, so naming it conveys nothing about what the
+    pilot chose. Pass ``include_uninteresting=True`` to get everything.
+    """
     result = []
     for line in lines:
         parsed = parse_weapon_line(line)
-        if parsed is not None and parsed.selected:
-            result.append(parsed)
+        if parsed is None or not parsed.selected:
+            continue
+        if not include_uninteresting and not is_interesting(parsed):
+            continue
+        result.append(parsed)
     return result
 
 
