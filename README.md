@@ -122,6 +122,25 @@ An asset key only resolves against the application that owns it, so a new `clien
 - **Dogfight detection is a heuristic.** Aggressive aerobatics read as a dogfight; a patient boom-and-zoom pass may not.
 - **The Discord application ID is inherited** from the original project, so the presence renders under that application's name rather than "War Thunder". See below to fix it.
 
+## Notes for anyone building on this
+
+**Console encoding.** The presence strings contain a middle dot. On a Windows
+console running a non-Latin codepage -- cp874 for Thai, cp932 for Japanese,
+cp936 for Chinese -- printing one raises `UnicodeEncodeError` and takes the
+process with it. Discord itself is UTF-8 and never had a problem; only
+logging did. `wtrpc` reconfigures stdout and stderr at startup, and anything
+you write alongside it should too. This bites at runtime on the user's
+machine and never in CI, which is exactly why it is easy to ship.
+
+**Ammunition.** The selected shell or weapon is not in the API. This is not
+an oversight in this project: a moderator on the official forum
+[confirmed](https://forum.warthunder.com/t/weapon-and-ammunition-info-in-localhost/345655)
+that ammunition count and weapon state are absent from `/state` and
+`/indicators`, and advised against inferring them by reading memory or
+modifying the client. What this app does instead is read the *loadout* from
+the plain-text profile save, and optionally read the *loaded round* off the
+gunner sight with OCR -- both read-only, neither touching the game.
+
 ## Development
 
 ```bash
