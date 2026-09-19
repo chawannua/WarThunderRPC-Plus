@@ -23,6 +23,8 @@ import sys
 import types
 from pathlib import Path
 
+import pathlib
+
 import pytest
 from PIL import Image, ImageGrab
 
@@ -244,12 +246,27 @@ class TestIsolateHud:
             assert set(binary.getdata()) == {0}, f"{color} was misclassified as HUD green"
 
     def test_dominance_boundary_is_respected(self):
-        # g - r and g - b exactly at the dominance threshold must pass.
+        # max_ratio is relaxed here so this exercises `dominance` alone; these
+        # murky olive colours are exactly what the ratio test exists to reject.
         img = Image.new("RGB", (1, 1), (50, 90, 50))  # g=90,r=50,b=50 -> both diffs 40
-        assert list(isolate_hud(img, min_green=90, dominance=40).getdata()) == [255]
+        assert list(
+            isolate_hud(img, min_green=90, dominance=40, max_ratio=1.0).getdata()
+        ) == [255]
         # One below the threshold must fail.
         img2 = Image.new("RGB", (1, 1), (51, 90, 50))  # g-r=39 < 40
-        assert list(isolate_hud(img2, min_green=90, dominance=40).getdata()) == [0]
+        assert list(
+            isolate_hud(img2, min_green=90, dominance=40, max_ratio=1.0).getdata()
+        ) == [0]
+
+    def test_ratio_test_rejects_what_dominance_alone_would_pass(self):
+        """The whole reason max_ratio exists, stated as a test.
+
+        (50, 90, 50) clears a dominance of 40 in both channels, yet red is 56%
+        of green -- foliage, not a HUD glyph, whose green measured in the real
+        game keeps red and blue near zero.
+        """
+        img = Image.new("RGB", (1, 1), (50, 90, 50))
+        assert list(isolate_hud(img, min_green=90, dominance=40).getdata()) == [0]
 
     def test_min_green_boundary_is_respected(self):
         img = Image.new("RGB", (1, 1), (0, 90, 0))
@@ -267,8 +284,13 @@ class TestIsolateHud:
     def test_custom_thresholds_are_honoured(self):
         img = Image.new("RGB", (1, 1), (61, 120, 61))  # g-r == g-b == 59
         # Fails a strict dominance of 60 but passes a looser one of 30.
-        assert list(isolate_hud(img, min_green=90, dominance=60).getdata()) == [0]
-        assert list(isolate_hud(img, min_green=90, dominance=30).getdata()) == [255]
+        # max_ratio relaxed so only `dominance` is under test here.
+        assert list(
+            isolate_hud(img, min_green=90, dominance=60, max_ratio=1.0).getdata()
+        ) == [0]
+        assert list(
+            isolate_hud(img, min_green=90, dominance=30, max_ratio=1.0).getdata()
+        ) == [255]
 
     def test_background_only_fixture_produces_no_false_positives(self):
         img = Image.open(FIXTURES / "weapon_background_only.png")
@@ -517,3 +539,50 @@ class TestRealTesseract:
         assert isinstance(result, list)
         for w in result:
             assert isinstance(w, WeaponLine)
+
+
+class TestAgainstARealCapture:
+    """Calibration against an actual 1920x1080 frame of the running game.
+
+    `weapon_hud_real.png` is a crop of the top-left HUD block captured from a
+    live F-16C sortie. Every other fixture here is synthetic, which is exactly
+    how the thresholds first went wrong: they were tuned to an invented green.
+    """
+
+    @pytest.fixture
+    def real_hud(self):
+        path = pathlib.Path(__file__).parent / "fixtures" / "weapon_hud_real.png"
+        if not path.exists():
+            pytest.skip("real HUD capture fixture not present")
+        return Image.open(path).convert("RGB")
+
+    def test_the_real_hud_green_is_detected(self, real_hud):
+        binary = isolate_hud(real_hud)
+        lit = sum(1 for v in binary.convert("L").tobytes() if v)
+        assert lit > 2000, "the HUD glyphs should survive isolation"
+
+    def test_isolation_keeps_only_a_small_fraction_of_the_frame(self, real_hud):
+        """Text is sparse. Passing a large share means the background leaked in."""
+        binary = isolate_hud(real_hud)
+        data = binary.convert("L").tobytes()
+        assert (sum(1 for v in data if v) / len(data)) < 0.10
+
+    def test_rows_of_text_are_found(self, real_hud):
+        rows = find_text_rows(isolate_hud(real_hud))
+        assert len(rows) >= 6, f"expected several HUD lines, found {len(rows)}"
+
+    def test_the_measured_hud_colours_pass(self):
+        """Colours sampled from the real capture, including anti-aliased edges."""
+        for rgb in [(31, 255, 0), (0, 255, 0), (5, 195, 6), (9, 136, 11)]:
+            img = Image.new("RGB", (2, 2), rgb)
+            assert any(isolate_hud(img).convert("L").tobytes()), f"{rgb} rejected"
+
+    def test_green_terrain_is_rejected(self):
+        """Foliage is green but carries real red, which the ratio test catches.
+
+        This is the case an absolute g-r margin alone lets through, and the
+        reason the ratio test exists.
+        """
+        for rgb in [(80, 130, 55), (60, 110, 40), (95, 140, 70), (110, 160, 90)]:
+            img = Image.new("RGB", (2, 2), rgb)
+            assert not any(isolate_hud(img).convert("L").tobytes()), f"{rgb} leaked"
