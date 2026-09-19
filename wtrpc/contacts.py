@@ -134,6 +134,46 @@ def looks_like_a_match(markers: list | None) -> bool:
     return False
 
 
+#: Ground battles put tank respawn points on the minimap; air battles never
+#: do. Measured: a Ground RB match on Mozdok showed 128 respawn_base_tank
+#: markers alongside a couple of air ones, while an Air RB match showed
+#: fighter and bomber respawns and not a single tank one.
+_GROUND_RESPAWN = "respawn_base_tank"
+_AIR_RESPAWNS = ("respawn_base_fighter", "respawn_base_bomber", "respawn_base_ucav")
+
+
+def battle_is_ground(markers: list | None) -> bool | None:
+    """True for a ground battle, False for an air one, None when unknown.
+
+    This asks the MATCH what kind of battle it is, which the player's current
+    vehicle cannot answer: spawning a helicopter in Ground RB does not turn it
+    into an air battle, and the vehicle selected in the hangar during the load
+    screen says nothing about the match at all.
+    """
+    if not markers:
+        return None
+
+    ground = air = False
+    for marker in markers:
+        if not isinstance(marker, dict):
+            continue
+        for field in ("type", "icon"):
+            value = marker.get(field)
+            if not isinstance(value, str):
+                continue
+            lowered = value.strip().lower()
+            if lowered == _GROUND_RESPAWN:
+                ground = True
+            elif lowered in _AIR_RESPAWNS:
+                air = True
+
+    if ground:
+        return True
+    if air:
+        return False
+    return None
+
+
 def nearest_hostile_km(markers: list | None, map_info: dict | None) -> float | None:
     """Horizontal distance in km to the closest hostile aircraft.
 

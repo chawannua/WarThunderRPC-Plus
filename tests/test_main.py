@@ -659,9 +659,37 @@ class TestMatchModeBelongsToTheMatch:
         assert poller.match_mode == "", "a new match must be free to relabel"
 
     def test_an_air_battle_still_labels_itself_air(self):
+        """An air battle has no tank respawns at all -- that is the tell."""
         poller = self._poller()
+        poller.client.map_obj.return_value = [
+            {"type": "respawn_base_fighter"},
+            {"type": "respawn_base_bomber"},
+        ]
         in_jet = self._spawn(poller, "air", "f_16c_block_50")
         assert in_jet.mode == "Air Domination"
+
+    def test_the_battle_type_comes_from_the_map_not_the_hangar_pick(self):
+        """Selecting a jet before a Ground RB match must not relabel it.
+
+        During the load screen the reported army is whatever was selected in
+        the hangar, which is how a Ground RB battle on Mozdok came out as
+        "Air Battle" for its entire duration.
+        """
+        poller = self._poller()
+        poller.client.map_info.return_value = {"valid": False}
+        poller.client.map_obj.return_value = []
+        poller.client.indicators.return_value = {
+            "valid": False,
+            "army": "air",
+            "type": "dummy_plane",
+        }
+        for _ in range(3):
+            poller.poll()
+
+        poller.client.map_info.return_value = {"valid": True}
+        poller.client.map_obj.return_value = [{"type": "respawn_base_tank"}]
+        spawned = self._spawn(poller, "tank", "tankModels/us_hstv_l")
+        assert spawned.mode == "Ground Domination"
 
 
 class TestStaleSpawnFrame:

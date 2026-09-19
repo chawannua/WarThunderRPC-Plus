@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from . import config as config_module
-from .contacts import looks_like_a_match, nearest_hostile_km
+from .contacts import battle_is_ground, looks_like_a_match, nearest_hostile_km
 from .flight import FlightAnalyzer
 from .ground import read_ground
 from .loadout import loadout_label, read_loadout
@@ -249,7 +249,13 @@ class Poller:
             return name
         return self.weapon
 
-    def _match_mode(self, objective: str, army: Army, activity: Activity) -> str:
+    def _match_mode(
+        self,
+        objective: str,
+        army: Army,
+        activity: Activity,
+        markers: list | None = None,
+    ) -> str:
         """Label the match, and keep that label for as long as it lasts.
 
         The mode is latched on the first poll of a match that can name it,
@@ -261,12 +267,24 @@ class Poller:
             self.match_mode = ""
             return ""
 
+        # Ask the match, not the vehicle. Latching on the player's army got
+        # this wrong in the obvious way: during the load screen the army is
+        # whatever was selected in the hangar, so picking a jet before a
+        # Ground RB battle labelled the whole match "Air Battle".
+        is_ground = battle_is_ground(markers)
+        if is_ground is None:
+            battle_army = army
+        else:
+            battle_army = Army.TANK if is_ground else Army.AIR
+
+        candidate = classify_mode(objective, battle_army)
+
         if not self.match_mode:
-            candidate = classify_mode(objective, army)
-            # An unknown army yields a bare label with no Air/Ground prefix,
-            # which is worth waiting a poll or two for rather than latching.
-            if candidate and army is not Army.UNKNOWN:
-                self.match_mode = candidate
+            # Only latch once the battle type is actually known; a guess made
+            # from the hangar selection is exactly what went wrong before.
+            if candidate and (is_ground is not None or army is not Army.UNKNOWN):
+                if is_ground is not None:
+                    self.match_mode = candidate
             return candidate
 
         return self.match_mode
@@ -483,7 +501,7 @@ class Poller:
             vehicle_id=vehicle_id,
             vehicle_name=vehicle_name,
             map_name=map_name,
-            mode=self._match_mode(objective, army, activity),
+            mode=self._match_mode(objective, army, activity, markers),
             flight=flight,
             ground=ground,
             air_state=air_state,
