@@ -24,12 +24,18 @@ field names are actively misleading::
               gunner_state=1  driver_state=1
               breach_dead=1  v_drive_broken=1  h_drive_dead=1
 
-So: a damage field is ABSENT while the component is fine and only appears
-once it breaks, and ``gunner_state``/``driver_state`` read 1 for knocked out
-and 0 for healthy -- the opposite of what the names suggest. Both readings
-are treated conservatively below: a component counts as broken only when its
-field is present AND truthy, so misreading the convention can only ever fail
-to report damage, never invent it.
+So a damage field is ABSENT while its component is fine and only appears once
+it breaks. That pattern held across every capture and is what this module
+relies on: a component counts as broken only when its field is present AND
+truthy, so misreading the convention can only fail to report damage, never
+invent it.
+
+``gunner_state`` and ``driver_state`` are NOT used, and the reason is worth
+keeping. Read together, the two M1A2 captures suggested 1 meant "out of
+action". An HSTV-L then reported 1 for both while carrying a full crew of
+three, which that reading cannot explain. One pair of samples was not enough
+to establish the semantics, and "Gunner down" printed about an intact crew is
+worse than printing nothing.
 """
 
 from __future__ import annotations
@@ -43,11 +49,16 @@ _DAMAGE_FIELDS: tuple[tuple[str, str], ...] = (
     ("h_drive_dead", "Horizontal drive out"),
 )
 
-#: Crew roles whose field reads 1 when the crewman is out of action.
-_CREW_FIELDS: tuple[tuple[str, str], ...] = (
-    ("gunner_state", "Gunner down"),
-    ("driver_state", "Driver down"),
-)
+#: Deliberately empty. ``gunner_state`` and ``driver_state`` were originally
+#: read as "1 means this crewman is out", inferred from a single pair of M1A2
+#: captures where the damaged one showed 1 alongside 1 of 4 crew remaining.
+#: An HSTV-L then reported 1 for both while carrying a FULL crew of 3, which
+#: contradicts that reading outright. Whatever the field encodes -- a state
+#: enum, a replacement in progress, something vehicle-specific -- it is not
+#: simply "dead", and a status line that says "Gunner down" about an intact
+#: crew is worse than saying nothing. Restore an entry here only with
+#: evidence from several vehicles, not one.
+_CREW_FIELDS: tuple[tuple[str, str], ...] = ()
 
 
 def _number(source: dict | None, key: str) -> float | None:

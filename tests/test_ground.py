@@ -65,21 +65,27 @@ class TestReadGround:
         g = read_ground(DAMAGED)
         assert g.ready_ammo == 11.0
         assert (g.crew_alive, g.crew_total) == (1, 4)
-        assert "Gunner down" in g.damage
         assert "Breech destroyed" in g.damage
+        assert "Vertical drive out" in g.damage
 
     def test_absent_damage_field_means_healthy(self):
         """The game omits the field entirely rather than sending a zero."""
         assert read_ground(HEALTHY).damage == ()
 
-    def test_crew_state_one_means_knocked_out_not_alive(self):
-        """The names read backwards: gunner_state is 1 when the gunner is out.
+    def test_crew_state_fields_are_not_interpreted(self):
+        """gunner_state/driver_state are deliberately ignored.
 
-        Confirmed by the pairing -- the capture with gunner_state=1 is the
-        same one reporting 1 of 4 crew remaining.
+        Two M1A2 captures suggested 1 meant "out of action". An HSTV-L then
+        reported 1 for both while carrying a full crew of three, which that
+        reading cannot explain -- so the field is not used at all rather than
+        printing "Gunner down" about an intact crew.
         """
-        assert "Gunner down" in read_ground({"gunner_state": 1.0}).damage
-        assert read_ground({"gunner_state": 0.0}).damage == ()
+        assert read_ground({"gunner_state": 1.0}).damage == ()
+        assert read_ground({"driver_state": 1.0}).damage == ()
+        assert read_ground(
+            {"gunner_state": 1.0, "driver_state": 1.0, "crew_current": 3.0,
+             "crew_total": 3.0}
+        ).damage == ()
 
     @pytest.mark.parametrize("indicators", [None, {}, {"army": "tank"}])
     def test_missing_data_is_not_fatal(self, indicators):
@@ -142,7 +148,7 @@ class TestGroundPresence:
         payload = build_presence(self._state(DAMAGED))
         assert "1/4 crew" in payload.state
         assert "11 rounds" in payload.state
-        assert payload.details.startswith("Gunner down")
+        assert payload.details.startswith("Breech destroyed")
 
     def test_no_mach_or_airspeed_for_a_tank(self):
         """/state is aviation only; a tank must never claim a Mach number."""
