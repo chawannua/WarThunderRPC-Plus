@@ -662,3 +662,87 @@ class TestMatchModeBelongsToTheMatch:
         poller = self._poller()
         in_jet = self._spawn(poller, "air", "f_16c_block_50")
         assert in_jet.mode == "Air Domination"
+
+
+class TestStaleSpawnFrame:
+    """The first poll after a respawn carries the previous vehicle's state.
+
+    Captured live: spawning a pristine ADATS Bradley reported a destroyed
+    breech and both drives out -- precisely the wreck of the M1A2 that had
+    just died -- for exactly one frame, then read clean for the rest of the
+    life. The rate limit happened to swallow it, but correctness must not
+    depend on that.
+    """
+
+    WRECK = {
+        "valid": True,
+        "army": "tank",
+        "type": "tankModels/us_adats_bradley",
+        "first_stage_ammo": 0.0,
+        "crew_current": 3.0,
+        "crew_total": 3.0,
+        "breach_dead": 1.0,
+        "v_drive_broken": 1.0,
+        "h_drive_dead": 1.0,
+    }
+    SETTLED = {
+        "valid": True,
+        "army": "tank",
+        "type": "tankModels/us_adats_bradley",
+        "first_stage_ammo": -1.0,
+        "crew_current": 3.0,
+        "crew_total": 3.0,
+    }
+
+    @staticmethod
+    def _poller():
+        from wtrpc.config import Config
+        from wtrpc.__main__ import Poller
+
+        poller = Poller(Config())
+        poller.client = MagicMock(spec=WarThunderClient)
+        poller.client.available = True
+        poller.client.map_image.return_value = None
+        poller.client.identify_map.return_value = "Mozdok"
+        poller.client.map_obj.return_value = [{"type": "respawn_base_tank"}]
+        poller.client.map_info.return_value = {"valid": True}
+        poller.client.state.return_value = {"valid": False}
+        poller.client.hudmsg.return_value = {"events": [], "damage": []}
+        poller.client.mission.return_value = {
+            "objectives": [{"primary": True, "text": "Capture and hold the point"}]
+        }
+        return poller
+
+    def test_first_frame_on_a_new_vehicle_reports_no_damage(self):
+        poller = self._poller()
+        poller.client.indicators.return_value = {
+            "valid": True,
+            "army": "tank",
+            "type": "tankModels/us_m1a2_sep2_abrams",
+            "first_stage_ammo": 18.0,
+        }
+        for _ in range(3):
+            poller.poll()
+
+        poller.client.indicators.return_value = self.WRECK
+        first = poller.poll()
+        assert first.ground.damage == (), (
+            "a freshly spawned vehicle must not inherit the last one's wreck"
+        )
+
+    def test_the_next_frame_is_trusted(self):
+        poller = self._poller()
+        poller.client.indicators.return_value = self.WRECK
+        poller.poll()
+        second = poller.poll()
+        assert second.ground.damage == (
+            "Breech destroyed",
+            "Vertical drive out",
+            "Horizontal drive out",
+        ), "once the vehicle is stable its real damage must show"
+
+    def test_a_missile_carrier_reports_no_gun_ammo(self):
+        """The ADATS has no gun ready rack; the game says -1, not 0."""
+        from wtrpc.ground import ammo_label, read_ground
+
+        assert ammo_label(read_ground(self.SETTLED)) == ""

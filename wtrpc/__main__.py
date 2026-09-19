@@ -179,6 +179,11 @@ class Poller:
         # relabel it "Air Domination" -- observed live on Mozdok, where the
         # objective text never changed but the label followed the vehicle.
         self.match_mode = ""
+        # The first poll after a respawn carries the PREVIOUS vehicle's state.
+        # Captured live: spawning a pristine ADATS reported a destroyed breech
+        # and both drives out -- exactly the wreck of the M1A2 that had just
+        # died -- for one frame, then read clean forever after.
+        self._ground_vehicle = ""
         self.weapon = ""
         self.shell = ""
         self.loadout = ""
@@ -434,7 +439,12 @@ class Poller:
         ground = Ground()
         air_state = AirState.UNKNOWN
         if army in (Army.TANK, Army.SHIP) and activity in _FLYING_ACTIVITIES:
-            ground = read_ground(indicators)
+            if vehicle_id != self._ground_vehicle:
+                # Same vehicle next poll means the reading can be trusted.
+                self._ground_vehicle = vehicle_id
+                ground = Ground()
+            else:
+                ground = read_ground(indicators)
             # The save file only changes between sorties, so read it once per
             # vehicle rather than on every poll.
             if vehicle_id != self._loadout_vehicle:
