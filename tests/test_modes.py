@@ -138,3 +138,27 @@ class TestGenericArmyFallbacks:
 
     def test_unknown_generic(self):
         assert classify_mode("gibberish", Army.UNKNOWN) == ""
+
+
+class TestObjectivesCapturedLive:
+    """Objective strings taken from real matches, not invented.
+
+    The inherited table was built from whatever its author happened to meet,
+    so gaps only show up by playing. "Assist the ground forces" was the ONLY
+    objective War Thunder published across an entire session of air battles,
+    169 samples of it, and every one fell through to the generic label.
+    """
+
+    def test_assist_the_ground_forces_is_a_ground_strike(self):
+        assert classify_mode("Assist the ground forces", Army.AIR) == "Air Ground Strike"
+
+    def test_label_is_not_doubled_up_by_the_army_prefix(self):
+        """The label already names the mission type, so it must not take an
+        army prefix as well and come out as "Ground Ground Strike"."""
+        for army in (Army.AIR, Army.TANK, Army.SHIP):
+            label = classify_mode("Assist the ground forces", army)
+            assert label == "Air Ground Strike"
+            assert "Ground Ground" not in label
+
+    def test_it_no_longer_falls_through_to_the_generic_label(self):
+        assert classify_mode("Assist the ground forces", Army.AIR) != "Air Battle"

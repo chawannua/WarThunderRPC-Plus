@@ -28,6 +28,11 @@ _PREFIX_TABLE: list[tuple[str, str, bool]] = [
     ("capture and keep hold of the point", "Conquest", True),
     ("destroy the enemy ground vehicles", "Air Ground Strike", False),
     ("destroy the highlighted targets", "Air Frontline", False),
+    # Captured live: the only objective string War Thunder published across
+    # every air battle in a whole play session, 169 samples of it, and the
+    # inherited table had no entry so all of them fell through to the generic
+    # "Air Battle".
+    ("assist the ground forces", "Air Ground Strike", False),
 ]
 
 _ARMY_WORD: dict[Army, str] = {
