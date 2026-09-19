@@ -53,7 +53,8 @@ class Config:
     guessed from the vehicle model -- which picks a stranger the moment anyone
     else drives the same one. Left empty, the kill counter stays off rather
     than risk showing someone else's score as yours."""
-    show_kills: bool = True
+    show_kills: bool = False
+    """Append the player's kill count for the match. Off by default."""
     show_weapon: bool = False
     """Read the selected weapon off the screen with OCR.
 
