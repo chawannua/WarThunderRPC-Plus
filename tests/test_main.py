@@ -543,3 +543,49 @@ class TestSpawnIntoMatchIsNotMistakenForTestFlight:
         # No objectives ever arrive, because this really is a test flight.
         self._feed(poller, objectives=None, polls=10)
         assert poller.activity is Activity.TEST_DRIVE
+
+
+class TestMatchWithoutObjectives:
+    """A match can run for minutes before /mission.json publishes anything.
+
+    Measured live on Golan Heights: 62 consecutive polls in a real battle with
+    no objective at all, reported as a test flight the whole time. The minimap
+    settles it, because the hash table holds battle maps only -- across 340
+    polls of a genuine test flight the map was never identified once, and
+    across those 62 match polls it was identified every time.
+    """
+
+    @staticmethod
+    def _poller(map_name: str):
+        from wtrpc.config import Config
+        from wtrpc.__main__ import Poller
+
+        poller = Poller(Config())
+        poller.client = MagicMock(spec=WarThunderClient)
+        poller.client.available = True
+        poller.client.map_obj.return_value = []
+        poller.client.state.return_value = {"valid": True, "M": 0.9}
+        poller.client.map_image.return_value = object()
+        poller.client.identify_map.return_value = map_name
+        poller.client.indicators.return_value = {
+            "valid": True,
+            "army": "air",
+            "type": "f-16c",
+        }
+        poller.client.map_info.return_value = {"valid": True}
+        poller.client.mission.return_value = {"objectives": None}
+        return poller
+
+    def test_recognised_battle_map_without_objectives_is_a_match(self):
+        poller = self._poller("Golan Heights")
+        for _ in range(4):
+            state = poller.poll()
+        assert poller.activity is Activity.IN_MATCH
+        assert state.map_name == "Golan Heights"
+
+    def test_unrecognised_map_without_objectives_is_still_a_test_flight(self):
+        poller = self._poller("")
+        for _ in range(10):
+            state = poller.poll()
+        assert poller.activity is Activity.TEST_DRIVE
+        assert state.map_name == ""

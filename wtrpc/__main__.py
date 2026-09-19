@@ -285,12 +285,24 @@ class Poller:
         objective = _primary_objective(mission)
         self.last_in_match = in_match
 
+        # Resolve the map before deciding, because whether the minimap matches
+        # a known battle map is itself evidence about what the player is doing.
+        map_name = self._resolve_map(in_map)
+
         # Mutually exclusive, evaluated top to bottom. No boolean gymnastics.
         if not in_map:
             activity = Activity.HANGAR
         elif not vehicle_valid or placeholder:
             activity = Activity.LOADING
-        elif in_match:
+        elif in_match or map_name:
+            # /mission.json is authoritative but slow: measured live, a match
+            # on Golan Heights ran for three full minutes before it published
+            # any objective, during which the player was wrongly reported as
+            # being in a test flight. The minimap settles it -- the hash table
+            # only contains battle maps, so a match means the map is
+            # recognised. Across 340 polls of a genuine test flight the map
+            # was never identified once; across 62 polls of that objective-less
+            # match it was identified every single time.
             activity = Activity.IN_MATCH
         else:
             activity = Activity.TEST_DRIVE
@@ -315,7 +327,7 @@ class Poller:
             army=army,
             vehicle_id=vehicle_id,
             vehicle_name=vehicle_name,
-            map_name=self._resolve_map(in_map),
+            map_name=map_name,
             mode=classify_mode(objective, army) if in_map else "",
             flight=flight,
             air_state=air_state,

@@ -36,10 +36,12 @@ _TIMEOUT_CEILING = 30.0
 class Config:
     """User-configurable settings for WarThunderRPC-Plus."""
 
-    client_id: str = "1211769535468937237"
-    """Discord application ID. THE APPLICATION'S NAME is what Discord shows
-    after "Playing", so the default renders as the upstream app's name rather
-    than "War Thunder". Register your own application to change it."""
+    client_id: str = "1550761049056223352"
+    """Discord application ID, registered as "War Thunder".
+
+    THE APPLICATION'S NAME is what Discord prints after "Playing" -- no field
+    in the presence payload can override it. The upstream project's ID renders
+    as that application's own name instead, so this project uses its own."""
     large_image: str = "logo"
     """Either an asset key uploaded to your Discord application, or a plain
     https URL. A key only resolves against the application that owns it, so a

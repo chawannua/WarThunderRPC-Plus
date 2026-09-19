@@ -21,7 +21,7 @@ from wtrpc.config import Config, config_path, load, save
 
 def test_defaults_match_spec():
     cfg = Config()
-    assert cfg.client_id == "1211769535468937237"
+    assert cfg.client_id == "1550761049056223352"
     assert cfg.poll_interval == 3.0
     assert cfg.min_update_interval == 15.0
     assert cfg.show_map is True
@@ -85,7 +85,7 @@ def test_load_creates_file_with_defaults_when_missing(tmp_path):
     assert path.exists()
     assert cfg == Config()
     on_disk = json.loads(path.read_text(encoding="utf-8"))
-    assert on_disk["client_id"] == "1211769535468937237"
+    assert on_disk["client_id"] == "1550761049056223352"
 
 
 def test_save_then_load_round_trips(tmp_path):
@@ -187,3 +187,12 @@ def test_load_with_default_path_uses_config_path(monkeypatch, tmp_path):
     cfg = load()
     assert cfg == Config()
     assert (tmp_path / "WarThunderRPC-Plus" / "config.json").exists()
+
+
+def test_default_application_is_not_the_upstream_one():
+    """Discord prints the APPLICATION'S name after "Playing", and no payload
+    field overrides it. Shipping the upstream project's id made the presence
+    announce that project's name instead of War Thunder, so the default must
+    stay pointed at this project's own application."""
+    assert Config().client_id != "1211769535468937237"
+    assert Config().large_image == "logo"
