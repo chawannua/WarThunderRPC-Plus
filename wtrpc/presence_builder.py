@@ -100,7 +100,17 @@ def _build_vehicle_state(
         # /state is aviation only, so a ground vehicle has no Mach or
         # airspeed to show. Its ready rack, its crew and its broken modules
         # are the equivalent, and until now they went unused entirely.
-        bits = [b for b in (ammo_label(state.ground), crew_label(state.ground)) if b]
+        bits = [
+            b
+            for b in (
+                # The loaded round when it can be read; otherwise what the
+                # vehicle is carrying, which is always knowable.
+                state.ground.shell or state.ground.loadout,
+                ammo_label(state.ground),
+                crew_label(state.ground),
+            )
+            if b
+        ]
         if bits:
             return _SEPARATOR.join([vehicle, *bits])
         return vehicle

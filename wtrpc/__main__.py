@@ -12,6 +12,7 @@ the fix.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import logging.handlers
 import signal
@@ -23,13 +24,14 @@ from . import config as config_module
 from .contacts import looks_like_a_match, nearest_hostile_km
 from .flight import FlightAnalyzer
 from .ground import read_ground
+from .loadout import loadout_label, read_loadout
 from .killfeed import KillFeed
 from .models import Activity, AirState, Army, Flight, GameState, Ground
 from .modes import classify_mode
 from .naming import format_vehicle, is_placeholder
 from .presence import PresenceManager
 from .presence_builder import build_presence
-from .weapon_ocr import read_selected_weapon
+from .weapon_ocr import read_loaded_shell, read_selected_weapon
 from .wtclient import WarThunderClient
 
 log = logging.getLogger("wtrpc")
@@ -173,7 +175,11 @@ class Poller:
         self._candidate_count = 0
         self.last_state: GameState | None = None
         self.weapon = ""
+        self.shell = ""
+        self.loadout = ""
+        self._loadout_vehicle = ""
         self._weapon_checked_at = 0.0
+        self._shell_checked_at = 0.0
 
     def _resolve_map(self, in_map: bool) -> str:
         """Identify the map, but only when it can actually have changed.
@@ -232,6 +238,40 @@ class Poller:
             log.debug("Weapon read from the HUD: %s", name)
             return name
         return self.weapon
+
+    def _read_shell(self) -> str:
+        """Read the loaded shell off the gunner sight, on the slow cadence.
+
+        The name is only drawn in the gunner view, so a frame taken while
+        driving reads nothing; the previous answer is kept rather than
+        blanking the presence.
+        """
+        now = time.monotonic()
+        if (now - self._shell_checked_at) < WEAPON_READ_INTERVAL_S:
+            return self.shell
+        self._shell_checked_at = now
+
+        # The shell name is drawn in the gunner sight, not in the corner
+        # block the aircraft HUD uses, and the sight fills the screen. Scan
+        # the whole frame rather than guess a box: the green isolation leaves
+        # very little behind, and read_shell_name only accepts known shell
+        # names, so a wider search costs little and misses nothing.
+        name = read_loaded_shell(None)
+        if name:
+            log.debug("Shell read from the sight: %s", name)
+            return name
+        return self.shell
+
+    def _weapon_box(self) -> tuple[int, int, int, int]:
+        try:
+            box = tuple(int(v) for v in self.cfg.weapon_region.split(","))
+            if len(box) == 4:
+                return box  # type: ignore[return-value]
+        except (ValueError, AttributeError):
+            pass
+        log.debug("Bad weapon_region %r; using the default box",
+                  getattr(self.cfg, "weapon_region", None))
+        return (0, 0, 900, 600)
 
     def _set_activity(self, activity: Activity) -> None:
         """Commit an activity change, but only once it has been seen twice.
@@ -368,6 +408,19 @@ class Poller:
         air_state = AirState.UNKNOWN
         if army in (Army.TANK, Army.SHIP) and activity in _FLYING_ACTIVITIES:
             ground = read_ground(indicators)
+            # The save file only changes between sorties, so read it once per
+            # vehicle rather than on every poll.
+            if vehicle_id != self._loadout_vehicle:
+                self._loadout_vehicle = vehicle_id
+                self.loadout = loadout_label(read_loadout(vehicle_id))
+                if self.loadout:
+                    log.debug("Loadout for %s: %s", vehicle_id, self.loadout)
+            ground = dataclasses.replace(ground, loadout=self.loadout)
+            if self.cfg.show_weapon:
+                self.shell = self._read_shell()
+                ground = dataclasses.replace(ground, shell=self.shell)
+        elif activity not in _FLYING_ACTIVITIES:
+            self.shell = ""
         if army is Army.AIR and activity in _FLYING_ACTIVITIES:
             # The minimap tells us whether anyone is actually out there, which
             # is the only way to tell a turning fight from hard aerobatics.

@@ -108,6 +108,19 @@ class Ground:
     crew_total: int | None = None
     speed_kph: float | None = None
     """Signed: negative means reversing. Measured -19.0 while backing up."""
+    shell: str = ""
+    """The round currently loaded, e.g. "APFSDS".
+
+    Read from the gunner sight by OCR, because nothing else knows it: the API
+    has no such field, and switching shells mid-battle writes nothing to the
+    save file either -- a diff across deliberate shell switching came back
+    with zero changed lines."""
+    loadout: str = ""
+    """What the vehicle is carrying, e.g. "APFSDS + HEATFS".
+
+    From the profile save, so it needs no screen capture and is always
+    available -- but it is the belt packed in the hangar, not the round up
+    the spout."""
     damage: tuple[str, ...] = ()
     """Broken components, most serious first. Empty when the vehicle is whole."""
 

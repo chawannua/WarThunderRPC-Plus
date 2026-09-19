@@ -29,6 +29,7 @@ import pytest
 from PIL import Image, ImageGrab
 
 from wtrpc.weapon_ocr import (
+    read_shell_name,
     WeaponLine,
     available,
     capture_region,
@@ -649,3 +650,44 @@ class TestWarningColouredRows:
         """`AAM 0:29[27]` has no marker while it reloads, so it is not a
         selection, and its countdown is not a quantity."""
         assert selected_weapons(["   AAM      0:29[27]"]) == []
+
+
+class TestShellNameFromTheGunnerSight:
+    """Reading the loaded shell, from real gunner-sight captures.
+
+    This was initially written off as impossible: the third-person tank HUD
+    draws its ammo selector as icons with counts and never spells a shell
+    name out. The gunner sight does, in the same green as the aircraft HUD --
+    so it was the wrong view being examined, not a missing capability.
+    """
+
+    @pytest.mark.parametrize(
+        "fixture,expected",
+        [("shell_apfsds.png", "APFSDS"), ("shell_heat_mp.png", "HEAT MP")],
+    )
+    def test_real_sight_captures(self, fixture, expected):
+        path = pathlib.Path(__file__).parent / "fixtures" / fixture
+        if not path.exists():
+            pytest.skip(f"{fixture} not present")
+        binary = isolate_hud(Image.open(path).convert("RGB"))
+        assert sum(1 for v in binary.convert("L").tobytes() if v) > 200
+
+    def test_parses_the_name_out_of_ocr_output(self):
+        assert read_shell_name(["APFSDS"]) == "APFSDS"
+        assert read_shell_name(["HEAT MP"]) == "HEAT MP"
+
+    def test_tolerates_the_stray_glyph_ocr_adds(self):
+        """The sight's green status dot reads as a character on the front."""
+        assert read_shell_name(["® HEAT MP"]) == "HEAT MP"
+        assert read_shell_name(["© APFSDS"]) == "APFSDS"
+
+    def test_longer_names_win_over_their_own_prefixes(self):
+        """HEAT MP must not be truncated to HEAT."""
+        assert read_shell_name(["HEAT MP"]) == "HEAT MP"
+
+    def test_ignores_the_rest_of_the_sight(self):
+        assert read_shell_name(["3.8", "*0", "1200", "-- --"]) == ""
+
+    @pytest.mark.parametrize("lines", [[], [""], ["   "], ["NOTASHELL"]])
+    def test_nothing_to_find_is_empty_not_a_guess(self, lines):
+        assert read_shell_name(lines) == ""

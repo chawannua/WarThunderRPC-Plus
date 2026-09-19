@@ -294,6 +294,44 @@ def parse_weapon_line(text: str) -> WeaponLine | None:
     return WeaponLine(selected=selected, group=group, count=count, name=name)
 
 
+#: Shell types War Thunder names in the gunner sight. The sight prints the
+#: loaded shell as bare green text with no marker and no count -- "APFSDS",
+#: "HEAT MP" -- which is a different shape from the aircraft weapon block and
+#: needs its own reader. Longer names come first so "HEAT MP" is not
+#: shortened to "HEAT".
+_SHELL_NAMES = (
+    "APFSDS", "APDS", "APCBC", "APHE", "APCR", "APHEBC", "APBC", "AP",
+    "HEAT MP", "HEATFS", "HEAT", "HESH", "HE VT", "HE",
+    "ATGM", "SMOKE", "SHRAPNEL", "PROX", "AAM",
+)
+
+
+def read_shell_name(lines: list[str]) -> str:
+    """Find the loaded shell type in OCR output from the gunner sight.
+
+    The sight draws the shell name on its own, in green, with no selection
+    marker and no quantity -- so `parse_weapon_line` cannot see it, since
+    that function anchors on a count. Matching against known shell names is
+    what distinguishes "APFSDS" from the range numbers and other stray text
+    sharing the sight.
+    """
+    for raw in lines:
+        text = raw.strip().upper()
+        if not text:
+            continue
+        # OCR picks the sight's green dot up as a stray glyph on the front.
+        cleaned = "".join(ch for ch in text if ch.isalnum() or ch.isspace()).strip()
+        # Match whole tokens, not substrings: "NOTASHELL" contains "HE", and
+        # a loose search would happily report a shell type that is not there.
+        tokens = cleaned.split()
+        for shell in _SHELL_NAMES:
+            parts = shell.split()
+            for i in range(len(tokens) - len(parts) + 1):
+                if tokens[i : i + len(parts)] == parts:
+                    return shell
+    return ""
+
+
 def selected_weapons(
     lines: list[str], *, include_uninteresting: bool = False
 ) -> list[WeaponLine]:
@@ -490,6 +528,37 @@ def extract(image: Image.Image) -> list[WeaponLine]:
     except Exception as exc:  # noqa: BLE001 - must never raise
         log.debug("weapon extraction failed: %s", exc)
         return []
+
+
+def read_loaded_shell(
+    box: tuple[int, int, int, int] | None = None,
+) -> str | None:
+    """Read the loaded shell type from the gunner sight, e.g. ``"APFSDS"``.
+
+    The sight prints the shell name in the same green as the aircraft HUD, so
+    the isolation stage is shared; only the parsing differs, since the name
+    stands alone with no marker and no count. Returns ``None`` when it cannot
+    be read -- which includes every moment the player is not in the gunner
+    view, because the name is only drawn there.
+    """
+    if not available():
+        return None
+    try:
+        image = capture_region(box)
+        if image is None:
+            return None
+        binary = isolate_hud(image)
+        if not find_text_rows(binary):
+            return None
+        text = pytesseract.image_to_string(
+            _prepare_for_ocr(binary), config=_OCR_CONFIG
+        )
+        return read_shell_name(
+            [line for line in text.splitlines() if line.strip()]
+        ) or None
+    except Exception as exc:  # noqa: BLE001 - must never raise
+        log.debug("shell read failed: %s", exc)
+        return None
 
 
 def read_selected_weapon(
