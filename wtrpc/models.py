@@ -94,6 +94,29 @@ class Flight:
 
 
 @dataclass(frozen=True)
+class Ground:
+    """Ground vehicle sample distilled from ``/indicators``.
+
+    ``/state`` is aviation only -- a tank answers it with ``{"valid": false}``
+    -- so none of this comes from there. Fields are ``None`` when the game did
+    not report them, which varies by vehicle.
+    """
+
+    ready_ammo: float | None = None
+    """Rounds in the ready rack, from ``first_stage_ammo``."""
+    crew_alive: int | None = None
+    crew_total: int | None = None
+    speed_kph: float | None = None
+    """Signed: negative means reversing. Measured -19.0 while backing up."""
+    damage: tuple[str, ...] = ()
+    """Broken components, most serious first. Empty when the vehicle is whole."""
+
+    @property
+    def valid(self) -> bool:
+        return self.ready_ammo is not None or self.crew_total is not None
+
+
+@dataclass(frozen=True)
 class GameState:
     """Everything the presence builder needs, in one immutable snapshot."""
 
@@ -108,6 +131,7 @@ class GameState:
     mode: str = ""
     """Match mode label, e.g. ``Air Domination``. Empty when unknown."""
     flight: Flight = field(default_factory=Flight)
+    ground: Ground = field(default_factory=Ground)
     air_state: AirState = AirState.UNKNOWN
     weapon: str = ""
     """Selected weapon name read from the HUD, empty when unread."""

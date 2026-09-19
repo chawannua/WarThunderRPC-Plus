@@ -22,8 +22,9 @@ from pathlib import Path
 from . import config as config_module
 from .contacts import looks_like_a_match, nearest_hostile_km
 from .flight import FlightAnalyzer
+from .ground import read_ground
 from .killfeed import KillFeed
-from .models import Activity, AirState, Army, Flight, GameState
+from .models import Activity, AirState, Army, Flight, GameState, Ground
 from .modes import classify_mode
 from .naming import format_vehicle, is_placeholder
 from .presence import PresenceManager
@@ -363,7 +364,10 @@ class Poller:
         # full telemetry there, so gating the headline feature on IN_MATCH hid
         # it exactly when a new user was looking for it.
         flight = Flight()
+        ground = Ground()
         air_state = AirState.UNKNOWN
+        if army in (Army.TANK, Army.SHIP) and activity in _FLYING_ACTIVITIES:
+            ground = read_ground(indicators)
         if army is Army.AIR and activity in _FLYING_ACTIVITIES:
             # The minimap tells us whether anyone is actually out there, which
             # is the only way to tell a turning fight from hard aerobatics.
@@ -391,6 +395,7 @@ class Poller:
             map_name=map_name,
             mode=classify_mode(objective, army) if in_map else "",
             flight=flight,
+            ground=ground,
             air_state=air_state,
             weapon=self.weapon,
             kills=kills,

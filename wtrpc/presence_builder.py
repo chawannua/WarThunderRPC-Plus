@@ -9,6 +9,7 @@ already-assembled ``GameState`` snapshot into text.
 from __future__ import annotations
 
 from wtrpc.flight import label as flight_regime_label
+from wtrpc.ground import ammo_label, crew_label, damage_label
 from wtrpc.models import Activity, AirState, Army, GameState, PresencePayload
 from wtrpc.naming import encyclopedia_image_url, is_placeholder
 
@@ -95,6 +96,15 @@ def _build_vehicle_state(
     vehicle = _vehicle_or_fallback(state.vehicle_name)
     kills = _kill_suffix(state, show_kills)
 
+    if state.army in (Army.TANK, Army.SHIP) and show_flight_data:
+        # /state is aviation only, so a ground vehicle has no Mach or
+        # airspeed to show. Its ready rack, its crew and its broken modules
+        # are the equivalent, and until now they went unused entirely.
+        bits = [b for b in (ammo_label(state.ground), crew_label(state.ground)) if b]
+        if bits:
+            return _SEPARATOR.join([vehicle, *bits])
+        return vehicle
+
     if state.army == Army.AIR and show_flight_data and state.flight is not None:
         bits: list[str] = []
         # Parked on the runway the game reports M=0.00 and IAS=0, which are not
@@ -115,6 +125,9 @@ def _build_vehicle_state(
 
 
 def _regime_label(state: GameState, dogfight_detection: bool) -> str:
+    if state.army in (Army.TANK, Army.SHIP):
+        # A knocked-out module is the closest a tank has to a flight regime.
+        return damage_label(state.ground)
     if state.air_state == AirState.UNKNOWN:
         return ""
     if state.air_state == AirState.DOGFIGHTING and not dogfight_detection:
