@@ -10,6 +10,7 @@ import pytest
 
 from wtrpc.contacts import (
     find_player,
+    looks_like_a_match,
     is_hostile,
     map_span_m,
     nearest_hostile_km,
@@ -202,3 +203,58 @@ class TestDogfightVersusManeuvering:
                 timestamp=float(t),
             )
         assert analyzer.state() == AirState.CRUISING
+
+
+class TestMatchMarkers:
+    """Marker sets captured live from both sides of the ambiguity."""
+
+    # A real battle, sampled while /mission.json still had objectives pending.
+    BATTLE = [
+        {"type": "airfield", "icon": "none"},
+        {"type": "defending_point", "icon": "defending_point"},
+        {"type": "respawn_base_fighter", "icon": "respawn_base_fighter"},
+        {"type": "respawn_base_bomber", "icon": "respawn_base_bomber"},
+    ]
+
+    # A genuine test flight: ground targets and airfields, nowhere to respawn
+    # and nothing to capture.
+    TEST_FLIGHT = [
+        {"type": "ground_model", "icon": "IFV"},
+        {"type": "ground_model", "icon": "MediumTank"},
+        {"type": "aircraft", "icon": "Fighter"},
+        {"type": "bombing_point", "icon": "bombing_point"},
+        {"type": "airfield", "icon": "none"},
+        {"type": "point_of_interest", "icon": "point_of_interest"},
+        {"type": "aircraft", "icon": "Player"},
+    ]
+
+    def test_battle_markers_are_recognised(self):
+        assert looks_like_a_match(self.BATTLE) is True
+
+    def test_test_flight_markers_are_not_a_match(self):
+        assert looks_like_a_match(self.TEST_FLIGHT) is False
+
+    def test_bombing_points_and_airfields_alone_are_not_enough(self):
+        """Both exist in a test flight, so neither may imply a battle."""
+        assert looks_like_a_match(
+            [{"type": "bombing_point"}, {"type": "airfield"}]
+        ) is False
+
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            {"type": "capture_zone"},
+            {"icon": "capture_zone"},
+            {"type": "respawn_base_tank"},
+            {"icon": "DEFENDING_POINT"},
+            {"type": " respawn_base_fighter "},
+        ],
+    )
+    def test_single_battle_marker_is_enough(self, marker):
+        """The game reports these under `type` on some markers and `icon` on
+        others, so both fields are checked, case and whitespace insensitively."""
+        assert looks_like_a_match([marker]) is True
+
+    @pytest.mark.parametrize("markers", [None, [], ["not a dict"], [{}]])
+    def test_junk_input_is_not_a_match(self, markers):
+        assert looks_like_a_match(markers) is False

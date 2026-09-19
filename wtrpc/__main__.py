@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from . import config as config_module
-from .contacts import nearest_hostile_km
+from .contacts import looks_like_a_match, nearest_hostile_km
 from .flight import FlightAnalyzer
 from .models import Activity, AirState, Army, Flight, GameState
 from .modes import classify_mode
@@ -289,20 +289,27 @@ class Poller:
         # a known battle map is itself evidence about what the player is doing.
         map_name = self._resolve_map(in_map)
 
+        # /mission.json is authoritative about being in a match but not prompt:
+        # measured live, a battle ran three full minutes before publishing any
+        # objective, and the player was reported as being in a test flight the
+        # whole time. Two independent corroborations close that gap.
+        #
+        # A recognised map name is one, but it leans on a hash table of maps
+        # known in 2024, so anything newer still falls through -- which is
+        # exactly what happened on ordinary maps after the first attempt.
+        #
+        # Minimap markers are the one that does not age: respawn bases,
+        # capture zones and defending points exist in a battle and nowhere
+        # else, whatever the map is called.
+        markers = self.client.map_obj() if in_map else None
+        battle_markers = looks_like_a_match(markers)
+
         # Mutually exclusive, evaluated top to bottom. No boolean gymnastics.
         if not in_map:
             activity = Activity.HANGAR
         elif not vehicle_valid or placeholder:
             activity = Activity.LOADING
-        elif in_match or map_name:
-            # /mission.json is authoritative but slow: measured live, a match
-            # on Golan Heights ran for three full minutes before it published
-            # any objective, during which the player was wrongly reported as
-            # being in a test flight. The minimap settles it -- the hash table
-            # only contains battle maps, so a match means the map is
-            # recognised. Across 340 polls of a genuine test flight the map
-            # was never identified once; across 62 polls of that objective-less
-            # match it was identified every single time.
+        elif in_match or map_name or battle_markers:
             activity = Activity.IN_MATCH
         else:
             activity = Activity.TEST_DRIVE
@@ -317,7 +324,7 @@ class Poller:
         if army is Army.AIR and activity in _FLYING_ACTIVITIES:
             # The minimap tells us whether anyone is actually out there, which
             # is the only way to tell a turning fight from hard aerobatics.
-            hostile_km = nearest_hostile_km(self.client.map_obj(), map_info)
+            hostile_km = nearest_hostile_km(markers, map_info)
             flight = _read_flight(self.client.state(), indicators, hostile_km)
             self.analyzer.add(flight, time.monotonic())
             air_state = self.analyzer.state()

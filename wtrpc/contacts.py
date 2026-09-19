@@ -96,6 +96,44 @@ def map_span_m(map_info: dict | None) -> tuple[float, float]:
     return _DEFAULT_MAP_SPAN_M, _DEFAULT_MAP_SPAN_M
 
 
+#: Minimap markers that only a real battle has. A test flight puts you alone
+#: on a map with AI targets: it has ground models, bombing points and
+#: airfields, but nowhere to respawn and nothing to capture or defend.
+#: Confirmed against live data on both sides -- a test flight showed none of
+#: these, a battle showed respawn bases and defending points before
+#: /mission.json had published a single objective.
+_MATCH_ONLY_MARKERS = frozenset(
+    {
+        "respawn_base_tank",
+        "respawn_base_bomber",
+        "respawn_base_fighter",
+        "capture_zone",
+        "defending_point",
+    }
+)
+
+
+def looks_like_a_match(markers: list | None) -> bool:
+    """True when the minimap carries markers only a real battle has.
+
+    This exists because /mission.json is unreliable about *when* it says you
+    are in a match: measured live, a battle ran three minutes before it
+    published any objective. Map name matching covers some of that gap, but
+    the hash table only holds maps known in 2024, so anything newer falls
+    through. These markers depend on neither.
+    """
+    if not markers:
+        return False
+    for marker in markers:
+        if not isinstance(marker, dict):
+            continue
+        for field in ("type", "icon"):
+            value = marker.get(field)
+            if isinstance(value, str) and value.strip().lower() in _MATCH_ONLY_MARKERS:
+                return True
+    return False
+
+
 def nearest_hostile_km(markers: list | None, map_info: dict | None) -> float | None:
     """Horizontal distance in km to the closest hostile aircraft.
 
