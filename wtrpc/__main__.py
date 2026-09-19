@@ -384,6 +384,7 @@ def main(argv: list[str] | None = None) -> int:
                     show_vehicle_image=cfg.show_vehicle_image,
                     show_flight_data=cfg.show_flight_data,
                     dogfight_detection=cfg.dogfight_detection,
+                    large_image=cfg.large_image,
                 )
             )
             time.sleep(cfg.poll_interval)

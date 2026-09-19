@@ -141,6 +141,7 @@ def build_presence(
     show_vehicle_image: bool = True,
     show_flight_data: bool = True,
     dogfight_detection: bool = True,
+    large_image: str = "logo",
 ) -> PresencePayload:
     """Build a ``PresencePayload`` from a ``GameState`` snapshot. Pure function."""
     if state.activity == Activity.HANGAR:
@@ -179,6 +180,7 @@ def build_presence(
         details=details,
         state=state_text,
         start=state.match_started_at,
+        large_image=large_image or "logo",
         large_text=_truncate("War Thunder"),
         small_image=small_image,
         small_text=small_text,

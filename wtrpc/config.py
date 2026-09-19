@@ -37,6 +37,13 @@ class Config:
     """User-configurable settings for WarThunderRPC-Plus."""
 
     client_id: str = "1211769535468937237"
+    """Discord application ID. THE APPLICATION'S NAME is what Discord shows
+    after "Playing", so the default renders as the upstream app's name rather
+    than "War Thunder". Register your own application to change it."""
+    large_image: str = "logo"
+    """Either an asset key uploaded to your Discord application, or a plain
+    https URL. A key only resolves against the application that owns it, so a
+    new client_id needs either its own uploaded `logo` asset or a URL here."""
     poll_interval: float = 3.0
     min_update_interval: float = 15.0
     show_map: bool = True

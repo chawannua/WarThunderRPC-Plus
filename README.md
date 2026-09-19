@@ -90,6 +90,28 @@ A config file is written on first run to `%APPDATA%\WarThunderRPC-Plus\config.js
 
 Run with `-v` for debug logging. A rolling log is kept next to the config file.
 
+### Making Discord say "War Thunder"
+
+Discord shows the **name of the application** the presence is published under, straight after the word *Playing*. No field in the payload changes it — not `large_text`, not `details`. Out of the box this project inherits the upstream application ID, so it reads as that application's name instead.
+
+To own it, register your own application — it takes about three minutes:
+
+1. Go to [discord.com/developers/applications](https://discord.com/developers/applications) and create a **New Application**. What you type as the name is exactly what everyone will see after *Playing*, so name it **War Thunder**.
+2. Copy the **Application ID** from the General Information page.
+3. Give it an image, either way round:
+   - **Rich Presence → Art Assets** → upload an image with the key `logo`, or
+   - skip that and point `large_image` at a plain `https://` URL instead.
+4. Put both into `%APPDATA%\WarThunderRPC-Plus\config.json`:
+
+```json
+{
+  "client_id": "your-application-id-here",
+  "large_image": "logo"
+}
+```
+
+An asset key only resolves against the application that owns it, so a new `client_id` needs either its own uploaded `logo` asset or a URL in `large_image` — otherwise the large icon comes up blank. The vehicle thumbnail is a URL and keeps working either way.
+
 ## Known limits
 
 - **The selected weapon cannot be shown.** War Thunder does not expose it. The API has exactly two weapon-related fields, `weapon2` and `weapon3` in `/indicators`, and the official documentation leaves both descriptions blank. Measured against a live F-4S over 468 samples covering three minutes of actively cycling through every weapon, both stayed at `0.0` and never moved once. There is no other candidate field across any of the eight endpoints.
@@ -98,7 +120,7 @@ Run with `-v` for debug logging. A rolling log is kept next to the config file.
 - **Ground and naval vehicles have no flight data**, because `/state` only reports aircraft telemetry. Naval presence shows the vehicle and mode only.
 - **Mode labels fall back to a generic** ("Air Battle") on non-English clients rather than guessing wrong.
 - **Dogfight detection is a heuristic.** Aggressive aerobatics read as a dogfight; a patient boom-and-zoom pass may not.
-- **The Discord application ID is inherited** from the original project. The presence therefore renders under that application's name, and it could be revoked by its owner. Register your own application and set `client_id` in the config to take ownership of it.
+- **The Discord application ID is inherited** from the original project, so the presence renders under that application's name rather than "War Thunder". See below to fix it.
 
 ## Development
 
