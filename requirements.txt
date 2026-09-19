@@ -1,3 +1,7 @@
 pypresence>=4.3.0
 requests>=2.31.0
 pillow>=10.0.0
+
+# Optional: only needed for the weapon HUD OCR feature (show_weapon).
+# Also requires the Tesseract binary itself, which pip cannot install.
+# pytesseract>=0.3.10
