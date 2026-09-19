@@ -449,23 +449,19 @@ class TestCaptureRegion:
 class _FakePytesseract:
     """A drop-in substitute for pytesseract that "recognises" canned text.
 
-    Returns one line of ``CLEAN_HUD_LINES`` (skipping blanks) per call, in
-    order, simulating a perfect OCR pass over the fixture image -- which
-    lets the orchestration logic in extract()/read_selected_weapon() be
-    tested deterministically without a real Tesseract install.
+    Returns the whole canned block in one call, which is how the real thing
+    is driven: the HUD is a tidy table and --psm 6 reads it as one block,
+    costing a single Tesseract invocation instead of one per row.
     """
 
     def __init__(self, lines):
-        self._lines = iter(lines)
+        self._text = chr(10).join(l for l in lines if l.strip())
 
     def get_tesseract_version(self):
         return "5.3.0-fake"
 
     def image_to_string(self, crop, config=None):
-        try:
-            return next(self._lines)
-        except StopIteration:
-            return ""
+        return self._text
 
 
 @pytest.fixture
@@ -478,7 +474,17 @@ def fake_ocr(monkeypatch):
 
 
 class TestExtractWithoutOcr:
-    """Real-environment behaviour: no pytesseract installed at all."""
+    """Behaviour with no usable OCR engine.
+
+    Unavailability is forced rather than inherited from the machine. These
+    originally just assumed no Tesseract was installed, and started failing
+    the moment one was -- a test that only passes on a machine missing a
+    dependency is not testing the code.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_ocr(self, monkeypatch):
+        monkeypatch.setattr("wtrpc.weapon_ocr._HAVE_PYTESSERACT", False)
 
     def test_extract_returns_empty_list_when_unavailable(self):
         img = Image.open(FIXTURES / "weapon_hud_full.png")
@@ -486,6 +492,11 @@ class TestExtractWithoutOcr:
 
     def test_read_selected_weapon_returns_none_when_unavailable(self):
         assert read_selected_weapon() is None
+
+    def test_available_reports_false(self):
+        from wtrpc.weapon_ocr import available
+
+        assert available() is False
 
 
 class TestExtractWithFakeOcr:

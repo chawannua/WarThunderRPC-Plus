@@ -104,6 +104,8 @@ def _build_vehicle_state(
             bits.append(f"Mach {state.flight.mach:.2f}")
         if state.flight.ias_kph is not None and state.flight.ias_kph >= _MIN_IAS_KPH:
             bits.append(f"{round(state.flight.ias_kph)} km/h IAS")
+        if state.weapon:
+            bits.append(state.weapon)
         if bits:
             return _SEPARATOR.join([vehicle, *bits, *( [kills] if kills else [] )])
 

@@ -42,7 +42,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +55,70 @@ except ImportError:  # pragma: no cover - depends on the environment
     _HAVE_PYTESSERACT = False
 
 
+#: Tesseract reads a whole block better than one line at a time here: the
+#: HUD is already a tidy table, and --psm 6 ("a uniform block of text") both
+#: reads it correctly and costs one call instead of one per row.
+_OCR_CONFIG = "--psm 6"
+
+#: Where Windows installers put the binary. The winget package does not add
+#: itself to PATH for already-open shells, and a PyInstaller build has no
+#: shell at all, so falling back to the standard locations is what makes this
+#: work in practice rather than only after a reboot.
+_WINDOWS_TESSERACT_PATHS = (
+    "C:/Program Files/Tesseract-OCR/tesseract.exe",
+    "C:/Program Files (x86)/Tesseract-OCR/tesseract.exe",
+)
+
+
+def _locate_tesseract() -> bool:
+    """Point pytesseract at a Tesseract binary, returning whether one works."""
+    if not _HAVE_PYTESSERACT:
+        return False
+    try:
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:  # noqa: BLE001 - probing, must not raise
+        pass
+
+    import os
+
+    # A test double stands in for the module in places, so reach for the
+    # nested attribute defensively rather than assuming the real package.
+    inner = getattr(pytesseract, "pytesseract", None)
+    if inner is None:
+        return False
+
+    for candidate in _WINDOWS_TESSERACT_PATHS:
+        if not os.path.exists(candidate):
+            continue
+        try:
+            inner.tesseract_cmd = candidate
+            pytesseract.get_tesseract_version()
+        except Exception:  # noqa: BLE001
+            continue
+        log.debug("Found Tesseract at %s", candidate)
+        return True
+    return False
+
+
+def _prepare_for_ocr(binary: Image.Image, scale: int = 3) -> Image.Image:
+    """Turn the isolation mask into something Tesseract reads well.
+
+    Two steps matter. The mask is white text on black, and Tesseract expects
+    dark text on light, so it is inverted. And HUD glyphs are small -- around
+    ten pixels tall at 1080p -- which Tesseract reads poorly, so the image is
+    upscaled. Without both, the same frame that reads perfectly comes back as
+    noise.
+    """
+    grey = binary.convert("L")
+    inverted = ImageOps.invert(grey)
+    if scale > 1:
+        inverted = inverted.resize(
+            (inverted.width * scale, inverted.height * scale), Image.LANCZOS
+        )
+    return inverted
+
+
 def available() -> bool:
     """Return whether weapon-name extraction can actually work right now.
 
@@ -64,10 +128,8 @@ def available() -> bool:
     if not _HAVE_PYTESSERACT:
         log.debug("pytesseract is not installed; weapon OCR unavailable")
         return False
-    try:
-        pytesseract.get_tesseract_version()
-    except Exception as exc:  # noqa: BLE001 - genuinely must never raise
-        log.debug("Tesseract binary not usable: %s", exc)
+    if not _locate_tesseract():
+        log.debug("no usable Tesseract binary found")
         return False
     return True
 
@@ -139,9 +201,25 @@ def _is_telemetry_label(group: str) -> bool:
     return head in _TELEMETRY_LABELS
 
 
+#: A real group is an uppercase abbreviation: AAM, AGM, CNN AUTO, AG AUTO.
+#: OCR occasionally hallucinates a "row" out of stray lit pixels -- ('mN', '')
+#: turned up once in five live frames -- and this rejects those without
+#: needing a list of every group the game has.
+_GROUP_RE = re.compile(r"^[A-Z][A-Z0-9]*(?: [A-Z][A-Z0-9]*)*$", re.ASCII)
+
+
 def is_interesting(line: "WeaponLine") -> bool:
-    """False for groups not worth putting in a Discord status."""
-    return line.group.strip().upper() not in _UNINTERESTING_GROUPS
+    """False for groups not worth putting in a Discord status.
+
+    Rejects the cannon and countermeasures, and anything that does not look
+    like a group abbreviation at all.
+    """
+    group = line.group.strip().upper()
+    if group in _UNINTERESTING_GROUPS:
+        return False
+    if not _GROUP_RE.match(line.group.strip()):
+        return False
+    return True
 
 
 def parse_weapon_line(text: str) -> WeaponLine | None:
@@ -397,12 +475,15 @@ def extract(image: Image.Image) -> list[WeaponLine]:
 
     try:
         binary = isolate_hud(image)
-        rows = find_text_rows(binary)
+        if not find_text_rows(binary):
+            return []
+
+        text = pytesseract.image_to_string(
+            _prepare_for_ocr(binary), config=_OCR_CONFIG
+        )
         results: list[WeaponLine] = []
-        for top, bottom in rows:
-            crop = binary.crop((0, top, binary.width, bottom + 1))
-            text = pytesseract.image_to_string(crop, config="--psm 7")
-            parsed = parse_weapon_line(text)
+        for line in text.splitlines():
+            parsed = parse_weapon_line(line)
             if parsed is not None:
                 results.append(parsed)
         return results
@@ -432,7 +513,7 @@ def read_selected_weapon(
             return None
 
         for weapon in extract(image):
-            if weapon.selected and weapon.name:
+            if weapon.selected and weapon.name and is_interesting(weapon):
                 return weapon.name
         return None
     except Exception as exc:  # noqa: BLE001 - must never raise

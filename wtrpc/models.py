@@ -109,6 +109,8 @@ class GameState:
     """Match mode label, e.g. ``Air Domination``. Empty when unknown."""
     flight: Flight = field(default_factory=Flight)
     air_state: AirState = AirState.UNKNOWN
+    weapon: str = ""
+    """Selected weapon name read from the HUD, empty when unread."""
     kills: int = 0
     """Confirmed kills by the player in this match, 0 when not counted."""
     match_started_at: int | None = None

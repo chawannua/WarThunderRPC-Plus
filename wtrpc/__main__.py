@@ -28,6 +28,7 @@ from .modes import classify_mode
 from .naming import format_vehicle, is_placeholder
 from .presence import PresenceManager
 from .presence_builder import build_presence
+from .weapon_ocr import read_selected_weapon
 from .wtclient import WarThunderClient
 
 log = logging.getLogger("wtrpc")
@@ -38,6 +39,9 @@ MAP_RETRY_INTERVAL_S = 30.0
 OFFLINE_POLL_INTERVAL_S = 5.0
 # Consecutive polls that must agree before an activity change is believed.
 TRANSITION_CONFIRMATIONS = 2
+# Screen-reading the weapon costs far more than an HTTP GET, so it runs on
+# its own slower cadence.
+WEAPON_READ_INTERVAL_S = 10.0
 # Spawning into a match briefly looks exactly like a test flight: the player is
 # on a map in a valid vehicle, but /mission.json has not published its
 # objectives yet. Measured live, that window lasted about six seconds before
@@ -167,6 +171,8 @@ class Poller:
         self._candidate: Activity | None = None
         self._candidate_count = 0
         self.last_state: GameState | None = None
+        self.weapon = ""
+        self._weapon_checked_at = 0.0
 
     def _resolve_map(self, in_map: bool) -> str:
         """Identify the map, but only when it can actually have changed.
@@ -196,6 +202,35 @@ class Poller:
         if self.map_name:
             log.debug("Map identified as %s", self.map_name)
         return self.map_name
+
+    def _read_weapon(self) -> str:
+        """Read the selected weapon off the screen, on a slow cadence.
+
+        A screen grab plus OCR costs far more than an HTTP GET, and nobody
+        changes weapon every three seconds, so this runs at its own interval
+        and keeps the previous answer in between. A frame where the HUD block
+        is not drawn -- it comes and goes with the camera view -- keeps the
+        last good reading rather than blanking the presence.
+        """
+        now = time.monotonic()
+        if (now - self._weapon_checked_at) < WEAPON_READ_INTERVAL_S:
+            return self.weapon
+        self._weapon_checked_at = now
+
+        try:
+            box = tuple(int(v) for v in self.cfg.weapon_region.split(","))
+            if len(box) != 4:
+                raise ValueError(self.cfg.weapon_region)
+        except (ValueError, AttributeError):
+            log.debug("Bad weapon_region %r; using the default box",
+                      getattr(self.cfg, "weapon_region", None))
+            box = (0, 0, 900, 600)
+
+        name = read_selected_weapon(box)
+        if name:
+            log.debug("Weapon read from the HUD: %s", name)
+            return name
+        return self.weapon
 
     def _set_activity(self, activity: Activity) -> None:
         """Commit an activity change, but only once it has been seen twice.
@@ -337,6 +372,11 @@ class Poller:
             self.analyzer.add(flight, time.monotonic())
             air_state = self.analyzer.state()
 
+        if self.cfg.show_weapon and army is Army.AIR and activity in _FLYING_ACTIVITIES:
+            self.weapon = self._read_weapon()
+        elif activity not in _FLYING_ACTIVITIES:
+            self.weapon = ""
+
         kills = 0
         if activity is Activity.IN_MATCH and self.cfg.show_kills:
             self.killfeed.identify_player(vehicle_id)
@@ -352,6 +392,7 @@ class Poller:
             mode=classify_mode(objective, army) if in_map else "",
             flight=flight,
             air_state=air_state,
+            weapon=self.weapon,
             kills=kills,
             match_started_at=self.activity_since,
         )

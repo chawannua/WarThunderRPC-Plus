@@ -54,6 +54,17 @@ class Config:
     else drives the same one. Left empty, the kill counter stays off rather
     than risk showing someone else's score as yours."""
     show_kills: bool = True
+    show_weapon: bool = False
+    """Read the selected weapon off the screen with OCR.
+
+    Off by default: it needs Tesseract installed, it only works while the
+    weapon HUD block is actually rendered, and it reads pixels rather than
+    data. Everything else in this app comes from the game's own API."""
+    weapon_region: str = "0,0,900,600"
+    """Screen box "left,top,right,bottom" holding the weapon HUD block.
+
+    The block sits top-left, but its exact position moves with resolution and
+    UI scale, so it is adjustable."""
     poll_interval: float = 3.0
     min_update_interval: float = 15.0
     show_map: bool = True
