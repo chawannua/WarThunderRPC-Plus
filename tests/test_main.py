@@ -589,3 +589,76 @@ class TestMatchWithoutObjectives:
             state = poller.poll()
         assert poller.activity is Activity.TEST_DRIVE
         assert state.map_name == ""
+
+
+class TestMatchModeBelongsToTheMatch:
+    """A Ground RB battle stays a Ground RB battle when you spawn a helicopter.
+
+    Observed live on Mozdok: the same objective text throughout, but the label
+    followed the vehicle -- "Ground Domination" in the tank, "Air Domination"
+    the moment an AH-64A spawned. Only one of those describes the match.
+    """
+
+    OBJECTIVE = "Capture and maintain superiority over the points"
+
+    @staticmethod
+    def _poller():
+        from wtrpc.config import Config
+        from wtrpc.__main__ import Poller
+
+        poller = Poller(Config())
+        poller.client = MagicMock(spec=WarThunderClient)
+        poller.client.available = True
+        poller.client.map_image.return_value = None
+        poller.client.identify_map.return_value = "Mozdok"
+        poller.client.map_obj.return_value = [{"type": "respawn_base_tank"}]
+        poller.client.map_info.return_value = {"valid": True}
+        poller.client.state.return_value = {"valid": False}
+        poller.client.hudmsg.return_value = {"events": [], "damage": []}
+        return poller
+
+    def _spawn(self, poller, army: str, vehicle: str, polls: int = 3):
+        poller.client.indicators.return_value = {
+            "valid": True,
+            "army": army,
+            "type": vehicle,
+        }
+        poller.client.mission.return_value = {
+            "objectives": [{"primary": True, "text": self.OBJECTIVE}]
+        }
+        state = None
+        for _ in range(polls):
+            state = poller.poll()
+        return state
+
+    def test_helicopter_does_not_relabel_a_ground_battle(self):
+        poller = self._poller()
+        in_tank = self._spawn(poller, "tank", "tankModels/us_m1a2_sep2_abrams")
+        assert in_tank.mode == "Ground Domination"
+
+        in_heli = self._spawn(poller, "air", "ah_64a_peten")
+        assert in_heli.mode == "Ground Domination", (
+            "the battle type belongs to the match, not to the vehicle"
+        )
+
+    def test_a_jet_does_not_relabel_it_either(self):
+        poller = self._poller()
+        self._spawn(poller, "tank", "tankModels/us_m1a2_sep2_abrams")
+        in_jet = self._spawn(poller, "air", "f_16c_block_50")
+        assert in_jet.mode == "Ground Domination"
+
+    def test_returning_to_the_hangar_clears_the_latch(self):
+        poller = self._poller()
+        self._spawn(poller, "tank", "tankModels/us_m1a2_sep2_abrams")
+
+        poller.client.map_info.return_value = {"valid": False}
+        poller.client.map_obj.return_value = []
+        poller.client.identify_map.return_value = ""
+        for _ in range(3):
+            poller.poll()
+        assert poller.match_mode == "", "a new match must be free to relabel"
+
+    def test_an_air_battle_still_labels_itself_air(self):
+        poller = self._poller()
+        in_jet = self._spawn(poller, "air", "f_16c_block_50")
+        assert in_jet.mode == "Air Domination"

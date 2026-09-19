@@ -174,6 +174,11 @@ class Poller:
         self._candidate: Activity | None = None
         self._candidate_count = 0
         self.last_state: GameState | None = None
+        # The battle type belongs to the MATCH, not to whatever the player is
+        # sitting in. Spawning a helicopter in a Ground RB match must not
+        # relabel it "Air Domination" -- observed live on Mozdok, where the
+        # objective text never changed but the label followed the vehicle.
+        self.match_mode = ""
         self.weapon = ""
         self.shell = ""
         self.loadout = ""
@@ -238,6 +243,28 @@ class Poller:
             log.debug("Weapon read from the HUD: %s", name)
             return name
         return self.weapon
+
+    def _match_mode(self, objective: str, army: Army, activity: Activity) -> str:
+        """Label the match, and keep that label for as long as it lasts.
+
+        The mode is latched on the first poll of a match that can name it,
+        because the battle type cannot change mid-match while the player's
+        vehicle very much can. Re-deriving it every poll made a Ground RB
+        battle read as "Air Domination" the moment a helicopter spawned.
+        """
+        if activity in (Activity.HANGAR, Activity.UNKNOWN):
+            self.match_mode = ""
+            return ""
+
+        if not self.match_mode:
+            candidate = classify_mode(objective, army)
+            # An unknown army yields a bare label with no Air/Ground prefix,
+            # which is worth waiting a poll or two for rather than latching.
+            if candidate and army is not Army.UNKNOWN:
+                self.match_mode = candidate
+            return candidate
+
+        return self.match_mode
 
     def _read_shell(self) -> str:
         """Read the loaded shell off the gunner sight, on the slow cadence.
@@ -446,7 +473,7 @@ class Poller:
             vehicle_id=vehicle_id,
             vehicle_name=vehicle_name,
             map_name=map_name,
-            mode=classify_mode(objective, army) if in_map else "",
+            mode=self._match_mode(objective, army, activity),
             flight=flight,
             ground=ground,
             air_state=air_state,
