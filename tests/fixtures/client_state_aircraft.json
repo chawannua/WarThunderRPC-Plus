@@ -1,0 +1,14 @@
+{
+    "valid": true,
+    "H, m": 3500,
+    "TAS, km/h": 550,
+    "IAS, km/h": 480,
+    "M": 0.45,
+    "AoA, deg": 2.3,
+    "AoS, deg": -0.5,
+    "Ny": 1.2,
+    "Vy, m/s": -3.4,
+    "flaps, %": 0,
+    "gear, %": 0,
+    "throttle 1, %": 100
+}

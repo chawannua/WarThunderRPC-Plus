@@ -1,0 +1,35 @@
+WarThunderRPC-Plus
+==================
+
+This project was written from scratch, but it stands on two pieces of prior
+work and the map metadata it inherits is not the author's own. Both are
+credited here.
+
+
+1. Original concept: ValerieOSD/WarThunderRPC
+--------------------------------------------
+https://github.com/ValerieOSD/WarThunderRPC
+
+The idea of surfacing War Thunder's localhost:8111 telemetry as a Discord
+Rich Presence, the Discord application ID, and the logo asset come from that
+project. None of its Python source is reused here; the telemetry client,
+state machine, flight analysis and presence builder in this repository are
+new code.
+
+
+2. Map metadata: wtrpc/maps.py
+------------------------------
+Originally distributed with PowerBroker2/WarThunder
+https://github.com/PowerBroker2/WarThunder
+
+`wtrpc/maps.py` is a lookup table of perceptual image hashes to War Thunder
+map names and real-world coordinates. It was compiled by Power_Broker and is
+redistributed here unmodified as a data table.
+
+IMPORTANT LICENSING CAVEAT: at the time of writing, the upstream project
+publishes no LICENSE file and declares no license in its PyPI metadata, so
+its terms of reuse are formally unspecified. This file is included in good
+faith with attribution, and will be removed on request by its author. It is
+data only -- no source code from that project is vendored here. If you need a
+cleanly licensed deployment, delete `wtrpc/maps.py`; the application degrades
+gracefully and simply stops naming the map.
