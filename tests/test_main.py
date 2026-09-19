@@ -461,3 +461,85 @@ class TestResolveMap:
 
         assert name == ""
         client.map_image.assert_not_called()
+
+
+class TestSpawnIntoMatchIsNotMistakenForTestFlight:
+    """Spawning into a match briefly looks identical to a test flight.
+
+    For a few seconds after the load screen the player is on a map in a valid
+    vehicle while /mission.json has not published its objectives, which reads
+    as TEST_DRIVE. Measured live, that window was about six seconds. The rate
+    limit happened to swallow it, but correctness must not depend on that.
+    """
+
+    @staticmethod
+    def _poller(monkeypatch):
+        from wtrpc.config import Config
+        from wtrpc.__main__ import Poller
+
+        poller = Poller(Config())
+        poller.client = MagicMock(spec=WarThunderClient)
+        poller.client.available = True
+        poller.client.map_image.return_value = None
+        poller.client.identify_map.return_value = ""
+        poller.client.map_obj.return_value = []
+        poller.client.state.return_value = {"valid": True, "M": 0.8}
+        return poller
+
+    def _feed(self, poller, *, objectives, polls):
+        poller.client.indicators.return_value = {
+            "valid": True,
+            "army": "air",
+            "type": "f-16c",
+        }
+        poller.client.map_info.return_value = {"valid": True}
+        poller.client.mission.return_value = {"objectives": objectives}
+        for _ in range(polls):
+            poller.poll()
+
+    def test_objectiveless_spawn_does_not_flip_to_test_drive(self, monkeypatch):
+        poller = self._poller(monkeypatch)
+
+        # Loading screen: no vehicle yet.
+        poller.client.indicators.return_value = {
+            "valid": False,
+            "army": "air",
+            "type": "dummy_plane",
+        }
+        poller.client.map_info.return_value = {"valid": True}
+        poller.client.mission.return_value = None
+        for _ in range(3):
+            poller.poll()
+        assert poller.activity is Activity.LOADING
+
+        # Spawned, but objectives have not arrived yet -- the ambiguous window.
+        self._feed(poller, objectives=None, polls=3)
+        assert poller.activity is Activity.LOADING, (
+            "a match that is loading must not be reported as a test flight "
+            "just because the objectives are a few seconds late"
+        )
+
+        # Objectives arrive: it resolves to a real match.
+        self._feed(
+            poller,
+            objectives=[{"primary": True, "text": "Assist the ground forces"}],
+            polls=2,
+        )
+        assert poller.activity is Activity.IN_MATCH
+
+    def test_a_genuine_test_flight_still_resolves_eventually(self, monkeypatch):
+        poller = self._poller(monkeypatch)
+        poller.client.indicators.return_value = {
+            "valid": False,
+            "army": "air",
+            "type": "dummy_plane",
+        }
+        poller.client.map_info.return_value = {"valid": True}
+        poller.client.mission.return_value = None
+        for _ in range(3):
+            poller.poll()
+        assert poller.activity is Activity.LOADING
+
+        # No objectives ever arrive, because this really is a test flight.
+        self._feed(poller, objectives=None, polls=10)
+        assert poller.activity is Activity.TEST_DRIVE

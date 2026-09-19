@@ -27,13 +27,18 @@ For aircraft, the presence carries live data straight from the game's `/state` e
 
 | Regime | How it is detected |
 |---|---|
-| **Dogfighting** | Sustained high-G manoeuvring — ≥35% of the window above 3G, or a mean heading change rate ≥8°/s while banked past 45° |
+| **Dogfighting** | Hard manoeuvring **and** a hostile aircraft within 2.5 km |
+| **Maneuvering** | The same hard manoeuvring with nobody close |
 | **Supersonic** | Mach ≥ 1.0 |
 | **Climbing** | Mean vertical speed ≥ 15 m/s |
 | **Diving** | Mean vertical speed ≤ −25 m/s |
 | **Cruising** | Anything else |
 
-Dogfight detection deliberately reads your *own* aircraft's behaviour rather than enemy positions on the minimap, because enemies are only marked in Arcade — this way it works identically in Realistic and Simulator.
+"Hard manoeuvring" means ≥35% of the window above 3G, or a mean heading change rate ≥8°/s while banked past 45°.
+
+**Why the split matters.** The instruments cannot tell a turning fight from aerobatics — both are sustained high-G, banked, fast-turning flight. Measured in a live match: a 9.4G break with the nearest enemy 5.8 km away and opening reads *identically* to a knife fight. It is a disengagement, and calling it a dogfight is simply wrong. So the distinction comes from `/map_obj.json`, which carries the player's and every marked aircraft's position; the closest approach anywhere in the window decides it, because a merge is brief and two fighters passing inside a kilometre are three kilometres apart two seconds later.
+
+Two honest caveats. The minimap only shows enemies your team has spotted outside Arcade, so **no visible contact is not proof nobody is there** — that case reports *Maneuvering*, never a guessed *Dogfighting*. And the minimap has no altitude, so the range is horizontal only.
 
 All of it works in **Test Flight** as well as in matches. `/state` serves full telemetry there, and test flight is how most people first try an app like this, so hiding the headline feature until a real match made it look broken.
 

@@ -37,6 +37,15 @@ MAP_RETRY_INTERVAL_S = 30.0
 OFFLINE_POLL_INTERVAL_S = 5.0
 # Consecutive polls that must agree before an activity change is believed.
 TRANSITION_CONFIRMATIONS = 2
+# Spawning into a match briefly looks exactly like a test flight: the player is
+# on a map in a valid vehicle, but /mission.json has not published its
+# objectives yet. Measured live, that window lasted about six seconds before
+# the objectives arrived and the state corrected itself to IN_MATCH. Rather
+# than trust the rate limit to hide the wrong state, demand real evidence
+# before believing that a match that was loading is only a test flight.
+SLOW_TRANSITIONS: dict[tuple[Activity, Activity], int] = {
+    (Activity.LOADING, Activity.TEST_DRIVE): 6,
+}
 # Activities during which the player is actually flying, so aircraft telemetry
 # is meaningful and the rolling flight window should survive the transition.
 _FLYING_ACTIVITIES = (Activity.IN_MATCH, Activity.TEST_DRIVE)
@@ -207,13 +216,16 @@ class Poller:
             self._candidate = activity
             self._candidate_count = 1
 
-        if self._candidate_count < TRANSITION_CONFIRMATIONS:
+        needed = SLOW_TRANSITIONS.get(
+            (self.activity, activity), TRANSITION_CONFIRMATIONS
+        )
+        if self._candidate_count < needed:
             log.debug(
                 "Ignoring unconfirmed %s -> %s (%d/%d)",
                 self.activity.value,
                 activity.value,
                 self._candidate_count,
-                TRANSITION_CONFIRMATIONS,
+                needed,
             )
             return
 
