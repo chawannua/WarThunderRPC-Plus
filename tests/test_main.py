@@ -1200,3 +1200,24 @@ class TestManagedMode:
         m, _ = self._main_with(monkeypatch, [MagicMock(), "finish", MagicMock()])
         assert m.main([]) == 0
         assert self.polls_made == 4
+
+
+class TestLogging:
+    def test_library_debug_chatter_stays_out_of_the_log(self, monkeypatch, tmp_path):
+        import logging
+
+        from wtrpc import __main__ as m
+
+        monkeypatch.setattr(m.config_module, "config_path", lambda: tmp_path / "config.json")
+        root = logging.getLogger()
+        before = list(root.handlers)
+        try:
+            m._setup_logging(False)
+            for name in ("urllib3", "asyncio", "PIL"):
+                assert not logging.getLogger(name).isEnabledFor(logging.DEBUG), name
+            assert logging.getLogger("wtrpc").isEnabledFor(logging.DEBUG)
+        finally:
+            for handler in root.handlers[:]:
+                if handler not in before:
+                    root.removeHandler(handler)
+                    handler.close()

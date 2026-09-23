@@ -71,6 +71,10 @@ def _setup_logging(verbose: bool) -> None:
     # The root passes everything; each handler picks its own level, so the file
     # log carries debug detail for bug reports without -v.
     root.setLevel(logging.DEBUG)
+    # ... except libraries, whose debug output (a line per HTTP request, every
+    # poll) would rotate the match history out of the log within minutes.
+    for noisy in ("urllib3", "asyncio", "PIL"):
+        logging.getLogger(noisy).setLevel(logging.INFO)
 
     # Presence strings contain a middle dot separator, and a Windows console
     # on a non-Latin codepage (cp874 for Thai, cp932 for Japanese, ...) raises
