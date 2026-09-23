@@ -189,7 +189,9 @@ class WarThunderClient:
 
         Returns the human readable map name (underscores replaced with
         spaces) when the closest known hash is within the match threshold,
-        otherwise returns "".
+        otherwise returns "". Also returns "" when the two closest matches
+        are different maps within one bit of each other (e.g. Sinai vs
+        Sands of Sinai): that is a coin flip, not an identification.
         """
         if image is None:
             return ""
@@ -198,13 +200,24 @@ class WarThunderClient:
 
         best_name = ""
         best_distance: int | None = None
+        second_distance: int | None = None
+        second_name = ""
         for known_hash, meta in maps.items():
             distance = hamming_distance(image_hash, known_hash)
             if best_distance is None or distance < best_distance:
-                best_distance = distance
-                best_name = meta["name"]
+                second_distance, second_name = best_distance, best_name
+                best_distance, best_name = distance, meta["name"]
+            elif second_distance is None or distance < second_distance:
+                second_distance, second_name = distance, meta["name"]
 
-        if best_distance is not None and best_distance <= _MAP_MATCH_THRESHOLD:
-            return best_name.replace("_", " ")
+        if best_distance is None or best_distance > _MAP_MATCH_THRESHOLD:
+            return ""
 
-        return ""
+        if (
+            second_distance is not None
+            and second_name != best_name
+            and second_distance - best_distance <= 1
+        ):
+            return ""
+
+        return best_name.replace("_", " ")

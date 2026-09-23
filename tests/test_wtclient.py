@@ -381,3 +381,63 @@ def test_identify_map_returns_name_with_spaces_on_close_match():
 def test_identify_map_none_image_returns_empty_string():
     client = WarThunderClient()
     assert client.identify_map(None) == ""
+
+
+def test_identify_map_returns_empty_string_when_ambiguous():
+    """Sinai vs Sands of Sinai: two different maps one bit apart is a coin
+    flip, not an identification -- prefer no answer to a wrong one."""
+    client = WarThunderClient()
+
+    from wtrpc.phash import average_hash
+
+    probe = Image.new("RGB", (64, 64), (5, 5, 5))
+    exact_hash = average_hash(probe)
+    neighbour_hash = format(int(exact_hash, 16) ^ 0b1, "016x")
+
+    fake_maps = {
+        exact_hash: {
+            "name": "Sinai",
+            "ULHC_lat": 0.0,
+            "ULHC_lon": 0.0,
+            "size_km": 65,
+        },
+        neighbour_hash: {
+            "name": "Sands_of_Sinai",
+            "ULHC_lat": 0.0,
+            "ULHC_lon": 0.0,
+            "size_km": 65,
+        },
+    }
+    with patch("wtrpc.wtclient.maps", fake_maps):
+        result = client.identify_map(probe)
+        assert result == ""
+
+
+def test_identify_map_close_second_place_same_name_is_not_ambiguous():
+    """Two hash variants of the *same* map should not trigger the
+    different-name ambiguity guard."""
+    client = WarThunderClient()
+
+    from wtrpc.phash import average_hash
+
+    probe = Image.new("RGB", (64, 64), (5, 5, 5))
+    exact_hash = average_hash(probe)
+    neighbour_hash = format(int(exact_hash, 16) ^ 0b1, "016x")
+
+    fake_maps = {
+        exact_hash: {
+            "name": "Second_Battle_of_El_Alamein",
+            "ULHC_lat": 0.0,
+            "ULHC_lon": 0.0,
+            "size_km": 65,
+        },
+        neighbour_hash: {
+            "name": "Second_Battle_of_El_Alamein",
+            "ULHC_lat": 0.0,
+            "ULHC_lon": 0.0,
+            "size_km": 65,
+        },
+    }
+    with patch("wtrpc.wtclient.maps", fake_maps):
+        result = client.identify_map(probe)
+        assert result == "Second Battle of El Alamein"
