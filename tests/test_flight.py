@@ -104,6 +104,24 @@ class TestDogfightingByLoadFactor:
             )
         assert analyzer.state() != AirState.DOGFIGHTING
 
+    def test_g_fraction_is_of_samples_with_a_reading_not_the_whole_window(self):
+        """A sparse ``load_factor`` reading must not be diluted by samples
+        that simply never reported one.
+
+        Only 2 of 5 samples in the window carry a load_factor at all; one of
+        those two clears the G threshold, which is 50% of the *readings*
+        -- comfortably over the 35% bar. Dividing by the whole window (5)
+        instead of the 2 actual readings would give 20% and wrongly miss
+        this as hard maneuvering.
+        """
+        analyzer = make_analyzer(min_samples=1)
+        analyzer.add(Flight(load_factor=4.0), timestamp=0.0)
+        analyzer.add(Flight(load_factor=0.5), timestamp=1.0)
+        analyzer.add(Flight(), timestamp=2.0)
+        analyzer.add(Flight(), timestamp=3.0)
+        analyzer.add(Flight(), timestamp=4.0)
+        assert analyzer.state() == AirState.MANEUVERING
+
 
 class TestDogfightingByHeadingAndRoll:
     def test_fast_heading_change_with_steep_roll_is_dogfighting(self):
@@ -155,6 +173,21 @@ class TestDogfightingByHeadingAndRoll:
                 timestamp=float(t),
             )
         assert analyzer.state() == AirState.DOGFIGHTING
+
+    def test_roll_fraction_is_of_samples_with_a_reading_not_the_whole_window(self):
+        """Same denominator bug, for roll_deg: only 2 of 10 samples in the
+        window report a roll at all, and both clear the threshold -- 100%
+        of the readings, not the 20% dividing by the whole window would
+        give (which sits under the 30% bar)."""
+        analyzer = make_analyzer(min_samples=1)
+        headings = [float(10 * i) for i in range(10)]  # 10 deg/s each step
+        for t, h in enumerate(headings):
+            roll = 50.0 if t < 2 else None
+            analyzer.add(
+                Flight(heading_deg=h, roll_deg=roll, load_factor=0.5),
+                timestamp=float(t),
+            )
+        assert analyzer.state() == AirState.MANEUVERING
 
 
 class TestReset:

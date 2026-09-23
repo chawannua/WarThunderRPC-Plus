@@ -130,14 +130,16 @@ class FlightAnalyzer:
         return min(distances) <= _CONTACT_RANGE_KM
 
     def _is_maneuvering_hard(self, samples: list[Flight]) -> bool:
-        total = len(samples)
-
+        # Fractions are of samples that actually carried a reading, not the
+        # whole window -- a field that is only sometimes reported must not
+        # be diluted by the samples that simply have no opinion on it.
+        g_readings = sum(1 for s in samples if s.load_factor is not None)
         high_g_count = sum(
             1
             for s in samples
             if s.load_factor is not None and abs(s.load_factor) >= _DOGFIGHT_G_THRESHOLD
         )
-        if total and (high_g_count / total) >= _DOGFIGHT_G_SAMPLE_FRACTION:
+        if g_readings and (high_g_count / g_readings) >= _DOGFIGHT_G_SAMPLE_FRACTION:
             return True
 
         heading_entries = [
@@ -151,12 +153,13 @@ class FlightAnalyzer:
             rates.append(abs(_angular_delta(h0, h1)) / dt)
         mean_rate = sum(rates) / len(rates) if rates else 0.0
 
+        roll_readings = sum(1 for s in samples if s.roll_deg is not None)
         roll_count = sum(
             1
             for s in samples
             if s.roll_deg is not None and abs(s.roll_deg) >= _DOGFIGHT_ROLL_THRESHOLD_DEG
         )
-        roll_fraction = (roll_count / total) if total else 0.0
+        roll_fraction = (roll_count / roll_readings) if roll_readings else 0.0
 
         if mean_rate >= _DOGFIGHT_HEADING_RATE_DEG_PER_S and (
             roll_fraction >= _DOGFIGHT_ROLL_SAMPLE_FRACTION

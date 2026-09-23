@@ -299,6 +299,7 @@ class TestMatchMarkers:
             {"type": "respawn_base_tank"},
             {"icon": "DEFENDING_POINT"},
             {"type": " respawn_base_fighter "},
+            {"type": "respawn_base_ucav"},
         ],
     )
     def test_single_battle_marker_is_enough(self, marker):

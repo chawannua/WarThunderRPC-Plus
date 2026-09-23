@@ -107,6 +107,7 @@ _MATCH_ONLY_MARKERS = frozenset(
         "respawn_base_tank",
         "respawn_base_bomber",
         "respawn_base_fighter",
+        "respawn_base_ucav",
         "capture_zone",
         "defending_point",
     }
