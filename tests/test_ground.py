@@ -99,6 +99,19 @@ class TestReadGround:
     def test_a_bool_is_not_a_number(self):
         assert read_ground({"first_stage_ammo": True}).ready_ammo is None
 
+    def test_nan_and_infinity_are_rejected(self):
+        g = read_ground({
+            "first_stage_ammo": float("nan"),
+            "crew_current": float("inf"),
+            "crew_total": float("-inf"),
+        })
+        assert g.ready_ammo is None
+        assert g.crew_alive is None
+        assert g.crew_total is None
+
+    def test_nan_damage_field_does_not_count_as_broken(self):
+        assert read_ground({"breach_dead": float("nan")}).damage == ()
+
 
 class TestLabels:
     def test_ammo_is_singular_at_one(self):

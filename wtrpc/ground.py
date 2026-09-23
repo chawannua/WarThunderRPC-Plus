@@ -40,6 +40,8 @@ worse than printing nothing.
 
 from __future__ import annotations
 
+import math
+
 from wtrpc.models import Ground
 
 #: Fields that exist only while the named component is broken.
@@ -67,7 +69,13 @@ def _number(source: dict | None, key: str) -> float | None:
     value = source.get(key)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value)
+    result = float(value)
+    # NaN/inf pass the isinstance check but blow up ``int()`` below (and mean
+    # nothing sensible for a rounds count or a crew size anyway), so they are
+    # treated the same as any other unreadable value: unknown, not a crash.
+    if not math.isfinite(result):
+        return None
+    return result
 
 
 def _is_broken(source: dict, key: str) -> bool:
