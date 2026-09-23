@@ -397,3 +397,40 @@ def test_configured_player_name_matches_case_insensitively():
     feed = KillFeed(fetch=lambda e, d: payload, player_name="chawannua")
     feed.poll()
     assert feed.kills == 1
+
+
+# ---------------------------------------------------------------------------
+# Internal id vs HUD display name
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+from wtrpc.killfeed import vehicle_matches  # noqa: E402
+
+
+class TestVehicleMatches:
+    @pytest.mark.parametrize(
+        "vehicle_id,hud_name",
+        [
+            ("ussr_t_34_85_zis_53", "T-34-85 (ZiS-53)"),
+            ("us_m1a2_abrams", "M1A2 Abrams"),
+            ("germ_pzkpfw_VI_ausf_b_tiger_IIh", "Tiger II (H)"),
+            ("us_destroyer_fletcher", "USS Fletcher"),
+            ("f-4s", "F-4S Phantom II"),
+            ("fw190a5", "Fw 190 A-5"),
+        ],
+    )
+    def test_a_vehicle_matches_its_own_hud_name(self, vehicle_id, hud_name):
+        assert vehicle_matches(vehicle_id, hud_name)
+
+    @pytest.mark.parametrize(
+        "vehicle_id,hud_name",
+        [
+            ("ussr_t_34_85_zis_53", "T-34"),
+            ("us_m1a2_abrams", "M1"),
+            ("germ_pzkpfw_VI_ausf_b_tiger_IIh", "Tiger"),
+            ("us_m1a2_abrams", ""),
+        ],
+    )
+    def test_a_shorter_different_vehicle_does_not_match(self, vehicle_id, hud_name):
+        assert not vehicle_matches(vehicle_id, hud_name)

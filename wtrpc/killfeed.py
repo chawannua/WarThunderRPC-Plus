@@ -105,26 +105,38 @@ def _normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
-def _strict_vehicle_match(target: str, vehicle: str) -> bool:
-    """True when ``target`` and ``vehicle`` (already normalised) identify the
-    same thing closely enough to trust.
+# Ground and naval ids open with the nation (``ussr_t_34_85_zis_53``,
+# ``us_destroyer_fletcher``) and the HUD never shows it.
+_NATION_PREFIXES = ("us", "ussr", "germ", "uk", "jp", "it", "fr", "cn", "sw", "il")
+# Ship classes the HUD prefixes onto a name the id does not carry.
+_SHIP_PREFIXES = ("uss", "hms", "hmas", "hmcs", "ijn", "kms", "sms", "rn", "fs", "rnlms", "hnlms")
 
-    A plain substring check in either direction is too loose: a short enemy
-    vehicle name like "T-34" normalises to "t34", which turns up as a literal
-    substring in the *middle* of an unrelated player vehicle id such as
-    "ussr_t_34_85_zis_53" ("ussrt3485zis53") -- an accident of spelling, not a
-    real match, and it caused an enemy's kill to be credited to the player.
-    Requiring one normalised string to be a *prefix* of the other keeps the
-    legitimate case (an internal id like "f-4s" is always a genuine prefix of
-    its own HUD display name "F-4S Phantom II") while rejecting a coincidental
-    match buried in the interior of a longer, unrelated string.
+
+def vehicle_matches(vehicle_id: str, hud_name: str) -> bool:
+    """True when the HUD name ``hud_name`` is the vehicle ``vehicle_id``.
+
+    The two spell the same vehicle differently -- ``f-4s`` against
+    "F-4S Phantom II", ``germ_pzkpfw_VI_ausf_b_tiger_IIh`` against
+    "Tiger II (H)" -- so both are folded to bare alphanumerics and compared by
+    their ends: the HUD name may extend the id, or the id may extend the HUD
+    name at the front. What must NOT match is a shorter HUD name that is merely
+    the start of a longer id, because that is a different vehicle: an enemy's
+    "T-34" is not the player's "T-34-85 (ZiS-53)", and crediting it cost the
+    player an enemy's kill.
     """
+    head, _, rest = vehicle_id.lower().partition("_")
+    if rest and head in _NATION_PREFIXES:
+        vehicle_id = rest
+    target = _normalize(vehicle_id)
+
+    words = hud_name.lower().split()
+    if len(words) > 1 and words[0] in _SHIP_PREFIXES:
+        words = words[1:]
+    vehicle = _normalize(" ".join(words))
+
     if not target or not vehicle:
         return False
-    if target == vehicle:
-        return True
-    shorter, longer = (target, vehicle) if len(target) <= len(vehicle) else (vehicle, target)
-    return longer.startswith(shorter)
+    return vehicle.startswith(target) or target.endswith(vehicle)
 
 
 class KillFeed:
@@ -259,16 +271,14 @@ class KillFeed:
             self._recount()
             return
 
-        target = _normalize(self._player_vehicle_id)
-        if not target:
+        if not _normalize(self._player_vehicle_id):
             self._player_name = ""
             self._kills = 0
             return
 
         candidates = set()
         for event in self._events:
-            vehicle = _normalize(event.killer_vehicle)
-            if _strict_vehicle_match(target, vehicle):
+            if vehicle_matches(self._player_vehicle_id, event.killer_vehicle):
                 candidates.add(event.killer)
 
         self._player_name = next(iter(candidates)) if len(candidates) == 1 else ""
