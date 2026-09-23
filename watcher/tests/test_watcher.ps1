@@ -67,11 +67,19 @@ $ResFile = Join-Path $TestRoot "wtrpc-watcher.res"
 $WindresCandidate = Join-Path (Split-Path -Parent $Gcc) "windres.exe"
 $Windres = if (Test-Path -LiteralPath $WindresCandidate) { $WindresCandidate } else { "windres" }
 
+# Give this test run's watcher its own mutex/stop-event names (via a plain
+# alphanumeric token, since Windows PowerShell 5.1 native-argument quoting
+# cannot reliably deliver a quoted wide-string literal through -D) so it
+# never collides with (or --stops) a production watcher instance that might
+# already be installed and running on this machine.
+$TestId = "T" + [guid]::NewGuid().ToString("N").Substring(0, 12)
+$TestIdDefine = "-DWTRPC_TEST_ID=$TestId"
+
 Write-Host "Compiling watcher..."
 & $Windres $WatcherRc -O coff -o $ResFile
 if ($LASTEXITCODE -ne 0) { throw "windres failed" }
 
-& $Gcc -O2 -s -Wall -Wextra -Werror -municode -mwindows $WatcherSrc $ResFile -o $WatcherExe
+& $Gcc -O2 -s -Wall -Wextra -Werror -municode -mwindows $TestIdDefine $WatcherSrc $ResFile -o $WatcherExe
 if ($LASTEXITCODE -ne 0) { throw "gcc failed to build watcher" }
 
 Write-Host "Compiling fakegame..."
@@ -92,7 +100,22 @@ Write-Host ("Watcher exe size: {0:N0} bytes" -f $watcherSize)
 $IntervalMs = 300
 $GraceMs = 1200
 $BackoffBaseMs = 900
+$FastExitMs = 1200
 $env:APPDATA = $AppDataDir
+
+# ---------------------------------------------------------------------------
+# Pre-seed an oversized log file so the very first LogLine() call the
+# watcher makes on startup has to exercise the 256 KB size-cap / truncation
+# path (finding #1), instead of waiting for hours of normal operation to
+# grow the log that large.
+# ---------------------------------------------------------------------------
+
+$LogDir = Join-Path $AppDataDir "WarThunderRPC-Plus"
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+$LogFile = Join-Path $LogDir "watcher.log"
+$LogCapBytes = 256 * 1024
+$PadBytes = New-Object byte[] ($LogCapBytes + 40960)
+[System.IO.File]::WriteAllBytes($LogFile, $PadBytes)
 
 $ChildLog = Join-Path $TestRoot "childlog.txt"
 $CtlFile = Join-Path $TestRoot "ctl.txt"
@@ -159,7 +182,8 @@ $watcherA = Start-Process -FilePath $WatcherExe -WindowStyle Hidden -PassThru -A
     "--child", $FakeChildExe,
     "--interval", $IntervalMs,
     "--grace", $GraceMs,
-    "--backoff-base", $BackoffBaseMs
+    "--backoff-base", $BackoffBaseMs,
+    "--fast-exit-ms", $FastExitMs
 )
 
 # --- (a) child launched when game appears, with --managed ---
@@ -172,20 +196,96 @@ if ($gotFirstStart -and $startLines.Count -ge 1) {
     Fail "a) child launched when game appears" "no start line observed within timeout"
 }
 
+# --- (h/i/j) log file was pre-seeded past the 256 KB cap; the watcher's
+# startup LogLine() call must have truncated it back down, and the result
+# must be plain UTF-8 text (no BOM, no embedded NULs from UTF-16LE) ---
+$logSizeAfterStart = (Get-Item -LiteralPath $LogFile).Length
+Assert-True ($logSizeAfterStart -lt $LogCapBytes) "h) oversized log file is truncated at startup" "sizeAfterStart=$logSizeAfterStart capBytes=$LogCapBytes"
+
+$logBytes = [System.IO.File]::ReadAllBytes($LogFile)
+$sampleLen = [Math]::Min(200, $logBytes.Length)
+$hasNul = $false
+for ($i = 0; $i -lt $sampleLen; $i++) {
+    if ($logBytes[$i] -eq 0) { $hasNul = $true; break }
+}
+$hasUtf8Bom = ($logBytes.Length -ge 3) -and ($logBytes[0] -eq 0xEF) -and ($logBytes[1] -eq 0xBB) -and ($logBytes[2] -eq 0xBF)
+Assert-True ((-not $hasNul) -and (-not $hasUtf8Bom)) "i) log file is BOM-less UTF-8 (no embedded NULs)" "hasNul=$hasNul hasUtf8Bom=$hasUtf8Bom"
+
+$logText = [System.IO.File]::ReadAllText($LogFile, [System.Text.Encoding]::UTF8)
+Assert-True ($logText -match "watcher started") "j) truncated log content is readable UTF-8 text" "did not find expected text in decoded log"
+
 # --- (b) relaunch after exit 0 ---
 Set-Mode "exit0"
 $beforeCount = (Get-StartLines (Get-ChildLogLines)).Count
-$gotRelaunch = Wait-For { (Get-StartLines (Get-ChildLogLines)).Count -ge ($beforeCount + 2) } 5000
+$gotRelaunch = Wait-For { (Get-StartLines (Get-ChildLogLines)).Count -ge ($beforeCount + 2) } 8000
 if ($gotRelaunch) {
     $lines = Get-StartLines (Get-ChildLogLines)
     $exitLines = Get-ExitLines (Get-ChildLogLines)
     $lastExit = Parse-Fields $exitLines[-1]
     $newStart = Parse-Fields $lines[-1]
     $delay = [int]$newStart.tick - [int]$lastExit.tick
-    Assert-True ($lastExit.rc -eq "0" -and $delay -lt ($IntervalMs * 4)) "b) relaunch promptly after exit 0" "rc=$($lastExit.rc) delayMs=$delay"
+    Assert-True ($lastExit.rc -eq "0" -and $delay -lt ($IntervalMs * 4)) "b) relaunch promptly after a clean, not-too-quick exit 0" "rc=$($lastExit.rc) delayMs=$delay"
 } else {
     Fail "b) relaunch after exit 0" "no relaunch observed within timeout"
 }
+
+# --- (b2) a *fast* exit 0 (ran less than --fast-exit-ms) is treated as a
+# failure and backed off, same as a crash, so a child that's broken in a
+# way that makes it exit(0) immediately can't relaunch-storm the watcher.
+#
+# Note: the currently-running child (launched while mode was still "exit0")
+# only picks up "exit0fast" the *next* time it starts, so switching modes
+# here first produces one leftover prompt relaunch before an actual
+# exit0fast cycle happens. Correlate each exit with its own start by pid
+# (rather than assuming log order pairs up 1:1) to find that real cycle.
+Set-Mode "exit0fast"
+$beforeCount = (Get-StartLines (Get-ChildLogLines)).Count
+$gotEnough = Wait-For { (Get-StartLines (Get-ChildLogLines)).Count -ge ($beforeCount + 3) } 12000
+
+$fastDelay = -1
+$fastExitRc = $null
+if ($gotEnough) {
+    $allLines = Get-ChildLogLines
+    $startTickByPid = @{}
+    $fastExitTick = $null
+    $fastExitIndex = -1
+    for ($idx = 0; $idx -lt $allLines.Count; $idx++) {
+        $line = $allLines[$idx]
+        if ($line -match $StartLineRe) {
+            $f = Parse-Fields $line
+            $startTickByPid[$f.pid] = [int]$f.tick
+        } elseif ($line -match $ExitLineRe) {
+            $f = Parse-Fields $line
+            if ((-not $fastExitTick) -and $f.rc -eq "0" -and $startTickByPid.ContainsKey($f.pid)) {
+                $ranMs = [int]$f.tick - $startTickByPid[$f.pid]
+                if ($ranMs -lt $FastExitMs) {
+                    $fastExitTick = [int]$f.tick
+                    $fastExitRc = $f.rc
+                    $fastExitIndex = $idx
+                }
+            }
+        }
+    }
+    if ($fastExitIndex -ge 0) {
+        # Look strictly *after* the fast-exit line's position (not just by
+        # tick value, since a fast exit's own start/exit lines can share
+        # the same tick) for the next relaunch.
+        for ($idx = $fastExitIndex + 1; $idx -lt $allLines.Count; $idx++) {
+            if ($allLines[$idx] -match $StartLineRe) {
+                $f = Parse-Fields $allLines[$idx]
+                $fastDelay = [int]$f.tick - $fastExitTick
+                break
+            }
+        }
+    }
+}
+Assert-True ($gotEnough -and $fastExitRc -eq "0" -and $fastDelay -ge ($BackoffBaseMs * 0.7)) "b2) fast exit 0 is backed off like a crash" "rc=$fastExitRc delayMs=$fastDelay expected>=~$BackoffBaseMs"
+
+# let a normal, not-too-quick exit 0 clear the backoff state before test (c)
+# so its delay measurements start from a clean g_backoffMs=0.
+Set-Mode "exit0"
+$beforeCount = (Get-StartLines (Get-ChildLogLines)).Count
+Wait-For { (Get-StartLines (Get-ChildLogLines)).Count -ge ($beforeCount + 1) } 8000 | Out-Null
 
 # --- (c) backoff after non-zero exit, then doubling ---
 Set-Mode "exit1"
@@ -256,7 +356,8 @@ $watcherB = Start-Process -FilePath $WatcherExe -WindowStyle Hidden -PassThru -A
     "--child", $FakeChildExe,
     "--interval", $IntervalMs,
     "--grace", $GraceMs,
-    "--backoff-base", $BackoffBaseMs
+    "--backoff-base", $BackoffBaseMs,
+    "--fast-exit-ms", $FastExitMs
 )
 
 $beforeCount = (Get-StartLines (Get-ChildLogLines)).Count
@@ -288,7 +389,8 @@ $watcherC = Start-Process -FilePath $WatcherExe -WindowStyle Hidden -PassThru -A
     "--child", $FakeChildExe,
     "--interval", $IntervalMs,
     "--grace", $GraceMs,
-    "--backoff-base", $BackoffBaseMs
+    "--backoff-base", $BackoffBaseMs,
+    "--fast-exit-ms", $FastExitMs
 )
 
 $beforeCount = (Get-StartLines (Get-ChildLogLines)).Count

@@ -16,29 +16,60 @@
  *                          game disappears (default 15000)
  *   --backoff-base <ms>   initial backoff delay after a crashing child,
  *                          doubling on each further crash (default 5000)
+ *   --fast-exit-ms <ms>   a child exit (any code) that ran for less than
+ *                          this long is treated as a failure and subject
+ *                          to backoff, even if its exit code was 0
+ *                          (default 10000)
  *   --stop                signal a running watcher instance to shut down
  *                          (and its child with it), then wait for it to
  *                          exit. Used by the uninstaller/upgrader.
+ *
+ * MUTEX_NAME / STOP_EVENT_NAME can be overridden at compile time (-D) so
+ * the test suite can run against its own kernel object names instead of
+ * colliding with a production instance. build.ps1 leaves them at their
+ * defaults.
  */
 
 #include <windows.h>
 #include <tlhelp32.h>
 #include <shellapi.h>
 #include <stdarg.h>
+#include <strsafe.h>
 
+/* WTRPC_TEST_ID lets the test harness give this build its own kernel
+ * object names (via a plain alphanumeric -D token, so it survives
+ * Windows PowerShell's native-argument quoting unscathed) instead of
+ * having to pass a whole quoted wide-string literal on the command line.
+ * MUTEX_NAME / STOP_EVENT_NAME can still be overridden directly too. */
+#ifdef WTRPC_TEST_ID
+#define WTRPC_STRINGIZE2(x) #x
+#define WTRPC_STRINGIZE(x) WTRPC_STRINGIZE2(x)
+#define WTRPC_WIDEN2(s) L##s
+#define WTRPC_WIDEN(s) WTRPC_WIDEN2(s)
+#define WTRPC_WSTR(x) WTRPC_WIDEN(WTRPC_STRINGIZE(x))
+#define MUTEX_NAME (L"WarThunderRPC-Plus-Test-" WTRPC_WSTR(WTRPC_TEST_ID) L"-Mutex")
+#define STOP_EVENT_NAME (L"WarThunderRPC-Plus-Test-" WTRPC_WSTR(WTRPC_TEST_ID) L"-Stop")
+#endif
+
+#ifndef MUTEX_NAME
 #define MUTEX_NAME L"Local\\WarThunderRPC-Plus-Watcher-Mutex"
+#endif
+#ifndef STOP_EVENT_NAME
 #define STOP_EVENT_NAME L"Local\\WarThunderRPC-Plus-Watcher-StopEvent"
+#endif
 
 #define BACKOFF_BASE_DEFAULT_MS 5000u
 #define BACKOFF_MAX_MULTIPLIER 12u /* default: 5000 * 12 = 60000 */
 #define LONG_RUN_MS (2u * 60u * 1000u)
 #define LOG_CAP_BYTES (256u * 1024u)
+#define FAST_EXIT_DEFAULT_MS 10000u
 
 static wchar_t g_gameExe[MAX_PATH] = L"aces.exe";
 static wchar_t g_childPath[MAX_PATH * 2] = L"";
 static DWORD g_intervalMs = 3000;
 static DWORD g_graceMs = 15000;
 static DWORD g_backoffBaseMs = BACKOFF_BASE_DEFAULT_MS;
+static DWORD g_fastExitMs = FAST_EXIT_DEFAULT_MS;
 static wchar_t g_logPath[MAX_PATH * 2] = L"";
 
 static HANDLE g_job = NULL;
@@ -58,13 +89,21 @@ static void LogLine(const wchar_t *fmt, ...)
     if (g_logPath[0] == L'\0')
         return;
 
+    /* Bounded formatting: unlike wvsprintfW/wsprintfW (which can write up
+     * to 1024 wchars regardless of the destination size), StringCchVPrintfW
+     * / StringCchPrintfW never write past the buffer, truncating instead. */
     wchar_t msg[512];
     va_list args;
     va_start(args, fmt);
-    wvsprintfW(msg, fmt, args);
+    StringCchVPrintfW(msg, ARRAYSIZE(msg), fmt, args);
     va_end(args);
 
-    HANDLE h = CreateFileW(g_logPath, FILE_APPEND_DATA, FILE_SHARE_READ, NULL,
+    wchar_t line[560];
+    StringCchPrintfW(line, ARRAYSIZE(line), L"%s\r\n", msg);
+
+    /* GENERIC_WRITE (not just FILE_APPEND_DATA) so SetEndOfFile is allowed
+     * to actually truncate the file when the size cap is exceeded. */
+    HANDLE h = CreateFileW(g_logPath, GENERIC_WRITE, FILE_SHARE_READ, NULL,
                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE)
         return;
@@ -74,11 +113,20 @@ static void LogLine(const wchar_t *fmt, ...)
         SetFilePointer(h, 0, NULL, FILE_BEGIN);
         SetEndOfFile(h);
     }
+    /* GENERIC_WRITE has no auto-append semantics, so always seek to end
+     * (which is offset 0 right after a truncation above) before writing. */
+    SetFilePointer(h, 0, NULL, FILE_END);
 
-    wchar_t line[560];
-    wsprintfW(line, L"%s\r\n", msg);
-    DWORD written;
-    WriteFile(h, line, (DWORD)(lstrlenW(line) * sizeof(wchar_t)), &written, NULL);
+    /* Write UTF-8 (no BOM) instead of raw UTF-16LE so the log is readable
+     * in plain-text viewers like Notepad. */
+    char utf8[2048];
+    int wlen = lstrlenW(line);
+    int utf8Len = WideCharToMultiByte(CP_UTF8, 0, line, wlen, utf8,
+                                       (int)sizeof(utf8), NULL, NULL);
+    if (utf8Len > 0) {
+        DWORD written;
+        WriteFile(h, utf8, (DWORD)utf8Len, &written, NULL);
+    }
     CloseHandle(h);
 }
 
@@ -184,10 +232,17 @@ static void Tick(void)
             GetExitCodeProcess(g_childProcess, &exitCode);
             ULONGLONG ranMs = now - g_childStartTick;
             CloseChildHandle();
-            LogLine(L"child exited, code=%d, ranMs=%d", (int)exitCode, (int)ranMs);
+            LogLine(L"child exited, code=%d, ranMs=%I64u", (int)exitCode, ranMs);
+
+            /* A clean exit (code 0) that happened almost immediately is
+             * treated as a failure too, so a child that is broken in a way
+             * that makes it exit 0 right away can't relaunch-storm the
+             * watcher. Only a code-0 exit after running for a while is
+             * considered a genuine, non-penalized shutdown. */
+            BOOL isFailure = (exitCode != 0) || (ranMs < g_fastExitMs);
 
             if (gameRunning) {
-                if (exitCode == 0) {
+                if (!isFailure) {
                     g_backoffMs = 0;
                     g_backoffUntilTick = 0;
                 } else {
@@ -302,6 +357,8 @@ static void ParseArgs(int argc, wchar_t **argv)
             g_graceMs = ParseUInt(argv[++i], g_graceMs);
         } else if (ArgEquals(argv[i], L"--backoff-base") && i + 1 < argc) {
             g_backoffBaseMs = ParseUInt(argv[++i], g_backoffBaseMs);
+        } else if (ArgEquals(argv[i], L"--fast-exit-ms") && i + 1 < argc) {
+            g_fastExitMs = ParseUInt(argv[++i], g_fastExitMs);
         } else if (ArgEquals(argv[i], L"--stop")) {
             g_stopRequested = TRUE;
         }
@@ -374,8 +431,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                                  &info, sizeof(info));
     }
 
-    LogLine(L"watcher started, game=%s, child=%s, interval=%d, grace=%d, backoffBase=%d",
-            g_gameExe, g_childPath, (int)g_intervalMs, (int)g_graceMs, (int)g_backoffBaseMs);
+    LogLine(L"watcher started, game=%s, child=%s, interval=%d, grace=%d, backoffBase=%d, fastExitMs=%d",
+            g_gameExe, g_childPath, (int)g_intervalMs, (int)g_graceMs, (int)g_backoffBaseMs,
+            (int)g_fastExitMs);
 
     for (;;) {
         DWORD wait = (hStopEvent != NULL)

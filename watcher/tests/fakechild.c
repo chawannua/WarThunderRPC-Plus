@@ -8,10 +8,15 @@
  * one-word directive from the file named by WTRPC_TEST_CTL to decide what
  * to do:
  *
- *   exit0  - sleep briefly, then exit(0)   (simulates a clean match-end)
- *   exit1  - sleep briefly, then exit(1)   (simulates a crash)
- *   (else) - sleep for a long time, so the harness can test termination
- *            via grace-period timeout or job-object kill-on-close
+ *   exit0     - sleep, then exit(0)  (simulates a clean match-end; sleeps
+ *               well past the test suite's --fast-exit-ms so it is never
+ *               mistaken for exit0fast below)
+ *   exit0fast - exit(0) immediately, no sleep (simulates a broken child
+ *               that exits "successfully" right away, which should be
+ *               treated as a failure worth backing off from)
+ *   exit1     - sleep briefly, then exit(1)  (simulates a crash)
+ *   (else)    - sleep for a long time, so the harness can test termination
+ *               via grace-period timeout or job-object kill-on-close
  *
  * Before exiting via exit0/exit1 it appends an "exit" line to the log too,
  * so the harness can measure relaunch/backoff timing precisely.
@@ -57,7 +62,9 @@ int main(int argc, char **argv)
 
     int rc = 0;
     if (strcmp(mode, "exit0") == 0) {
-        Sleep(150);
+        Sleep(1800);
+        rc = 0;
+    } else if (strcmp(mode, "exit0fast") == 0) {
         rc = 0;
     } else if (strcmp(mode, "exit1") == 0) {
         Sleep(150);
