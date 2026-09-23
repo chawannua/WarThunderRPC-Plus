@@ -2,7 +2,7 @@
 
 import pytest
 
-from wtrpc.models import Activity, AirState, Army, Flight, GameState, PresencePayload
+from wtrpc.models import Activity, AirState, Army, Flight, GameState, Ground, PresencePayload
 from wtrpc.presence_builder import build_presence
 
 MAX_LEN = 128
@@ -339,3 +339,48 @@ class TestReturnsPresencePayload:
         state = GameState(activity=Activity.HANGAR)
         payload = build_presence(state)
         assert isinstance(payload, PresencePayload)
+
+
+class TestGroundKillSuffix:
+    """The TANK/SHIP branch used to drop the kill count entirely."""
+
+    def test_tank_with_ready_rack_appends_kills(self):
+        state = GameState(
+            activity=Activity.IN_MATCH,
+            army=Army.TANK,
+            vehicle_name="US M1A2 SEP2 ABRAMS",
+            ground=Ground(ready_ammo=18.0),
+            kills=3,
+        )
+        payload = build_presence(state, show_kills=True)
+        assert payload.state == "US M1A2 SEP2 ABRAMS · 18 rounds · 3 kills"
+
+    def test_tank_with_no_other_bits_still_appends_kills(self):
+        state = GameState(
+            activity=Activity.IN_MATCH,
+            army=Army.TANK,
+            vehicle_name="US M1A2 SEP2 ABRAMS",
+            kills=1,
+        )
+        payload = build_presence(state, show_kills=True)
+        assert payload.state == "US M1A2 SEP2 ABRAMS · 1 kill"
+
+    def test_ship_with_no_kills_omits_suffix(self):
+        state = GameState(
+            activity=Activity.IN_MATCH,
+            army=Army.SHIP,
+            vehicle_name="US DESTROYER",
+            kills=0,
+        )
+        payload = build_presence(state, show_kills=True)
+        assert "kill" not in payload.state
+
+    def test_tank_kills_hidden_when_show_kills_false(self):
+        state = GameState(
+            activity=Activity.IN_MATCH,
+            army=Army.TANK,
+            vehicle_name="US M1A2 SEP2 ABRAMS",
+            kills=3,
+        )
+        payload = build_presence(state, show_kills=False)
+        assert "kill" not in payload.state

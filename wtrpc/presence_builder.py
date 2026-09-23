@@ -111,6 +111,8 @@ def _build_vehicle_state(
             )
             if b
         ]
+        if kills:
+            bits.append(kills)
         if bits:
             return _SEPARATOR.join([vehicle, *bits])
         return vehicle
