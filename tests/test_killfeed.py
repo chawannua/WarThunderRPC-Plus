@@ -289,3 +289,111 @@ def test_poll_survives_missing_msg_key():
     feed = KillFeed(fetch=lambda e, d: payload)
     feed.poll()
     assert feed.kills == 0
+
+
+# ---------------------------------------------------------------------------
+# parse_event -- nested parentheses in the vehicle name
+# ---------------------------------------------------------------------------
+
+
+def test_parse_event_vehicle_name_with_nested_parens():
+    msg = "Pilot (T-34 (1941)) destroyed Enemy"
+    event = parse_event(msg)
+    assert event is not None
+    assert event.killer == "Pilot"
+    assert event.killer_vehicle == "T-34 (1941)"
+    assert event.victim == "Enemy"
+
+
+# ---------------------------------------------------------------------------
+# KillFeed -- fallback identification must not match on loose substrings
+# ---------------------------------------------------------------------------
+
+
+def test_fallback_identification_does_not_match_unrelated_short_vehicle_name():
+    # The enemy's bare "T-34" happens to appear as a substring in the middle
+    # of the player's long internal vehicle id ("ussr_t_34_85_zis_53"
+    # normalises to "ussrt3485zis53", which contains "t34"). A loose
+    # substring-in-either-direction match wrongly attributes the enemy's
+    # kill to the player.
+    payload = {
+        "events": [],
+        "damage": [
+            {"id": 1, "msg": "EnemyPilot (T-34) destroyed [ai] SomeTarget"},
+        ],
+    }
+    feed = KillFeed(fetch=lambda e, d: payload)
+    feed.identify_player("ussr_t_34_85_zis_53")
+    feed.poll()
+    assert feed.player_name == ""
+    assert feed.kills == 0
+
+
+def test_fallback_identification_still_matches_prefix_of_display_name():
+    # The existing, legitimate case: the internal id is a genuine prefix of
+    # the HUD display name for the same vehicle.
+    payload = {
+        "events": [],
+        "damage": [
+            {"id": 1, "msg": "Chawannua (F-4S Phantom II) destroyed [ai] MiG-15bis"},
+        ],
+    }
+    feed = KillFeed(fetch=lambda e, d: payload)
+    feed.identify_player("f-4s")
+    feed.poll()
+    assert feed.player_name == "Chawannua"
+    assert feed.kills == 1
+
+
+# ---------------------------------------------------------------------------
+# KillFeed -- non-int / bool damage ids must not bypass dedup
+# ---------------------------------------------------------------------------
+
+
+def test_poll_skips_entries_with_non_int_id_every_time():
+    calls = {"n": 0}
+
+    def fetch(last_evt, last_dmg):
+        calls["n"] += 1
+        return {
+            "events": [],
+            "damage": [
+                {"id": "not-an-int", "msg": "Bob (P-51D) destroyed [ai] Enemy"},
+            ],
+        }
+
+    feed = KillFeed(fetch=fetch, player_name="Bob")
+    feed.poll()
+    feed.poll()
+    feed.poll()
+    assert feed.kills == 0
+
+
+def test_poll_skips_entries_with_bool_id():
+    payload = {
+        "events": [],
+        "damage": [
+            {"id": True, "msg": "Bob (P-51D) destroyed [ai] Enemy"},
+        ],
+    }
+    feed = KillFeed(fetch=lambda e, d: payload, player_name="Bob")
+    feed.poll()
+    feed.poll()
+    assert feed.kills == 0
+
+
+# ---------------------------------------------------------------------------
+# KillFeed -- configured player_name matching ignores case and tags
+# ---------------------------------------------------------------------------
+
+
+def test_configured_player_name_matches_case_insensitively():
+    payload = {
+        "events": [],
+        "damage": [
+            {"id": 1, "msg": "^TAG^ Chawannua (F-4S Phantom II) destroyed [ai] MiG-15bis"},
+        ],
+    }
+    feed = KillFeed(fetch=lambda e, d: payload, player_name="chawannua")
+    feed.poll()
+    assert feed.kills == 1

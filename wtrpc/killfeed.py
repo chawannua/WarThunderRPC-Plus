@@ -49,7 +49,7 @@ _KILL_VERBS = frozenset({"destroyed", "shot down", "wrecked"})
 #: etc.). Killer name is matched non-greedily up to the first " (" so the
 #: vehicle group always lands on the actual vehicle parenthetical.
 _EVENT_RE = re.compile(
-    r"^(?P<killer>.+?)\s+\((?P<vehicle>[^()]+)\)\s+"
+    r"^(?P<killer>.+?)\s+\((?P<vehicle>(?:[^()]|\([^()]*\))+)\)\s+"
     r"(?P<verb>" + "|".join(re.escape(v) for v in _VERBS) + r")\s+"
     r"(?P<ai>\[ai\]\s+)?(?P<victim>.+)$"
 )
@@ -103,6 +103,28 @@ def _normalize(text: str) -> str:
     them up.
     """
     return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _strict_vehicle_match(target: str, vehicle: str) -> bool:
+    """True when ``target`` and ``vehicle`` (already normalised) identify the
+    same thing closely enough to trust.
+
+    A plain substring check in either direction is too loose: a short enemy
+    vehicle name like "T-34" normalises to "t34", which turns up as a literal
+    substring in the *middle* of an unrelated player vehicle id such as
+    "ussr_t_34_85_zis_53" ("ussrt3485zis53") -- an accident of spelling, not a
+    real match, and it caused an enemy's kill to be credited to the player.
+    Requiring one normalised string to be a *prefix* of the other keeps the
+    legitimate case (an internal id like "f-4s" is always a genuine prefix of
+    its own HUD display name "F-4S Phantom II") while rejecting a coincidental
+    match buried in the interior of a longer, unrelated string.
+    """
+    if not target or not vehicle:
+        return False
+    if target == vehicle:
+        return True
+    shorter, longer = (target, vehicle) if len(target) <= len(vehicle) else (vehicle, target)
+    return longer.startswith(shorter)
 
 
 class KillFeed:
@@ -193,11 +215,16 @@ class KillFeed:
                 continue
 
             entry_id = entry.get("id")
-            if isinstance(entry_id, int):
-                if entry_id <= self._last_damage_id:
-                    continue
-                if entry_id > max_damage_id:
-                    max_damage_id = entry_id
+            # An id that is not a plain int (str, float, missing, or the bool
+            # subclass of int) cannot be compared against the cursor, so the
+            # entry can never be deduplicated and would otherwise be recounted
+            # on every single poll. Skip it entirely rather than risk that.
+            if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+                continue
+            if entry_id <= self._last_damage_id:
+                continue
+            if entry_id > max_damage_id:
+                max_damage_id = entry_id
 
             msg = entry.get("msg")
             if not isinstance(msg, str):
@@ -241,7 +268,7 @@ class KillFeed:
         candidates = set()
         for event in self._events:
             vehicle = _normalize(event.killer_vehicle)
-            if vehicle and (target in vehicle or vehicle in target):
+            if _strict_vehicle_match(target, vehicle):
                 candidates.add(event.killer)
 
         self._player_name = next(iter(candidates)) if len(candidates) == 1 else ""
@@ -252,10 +279,15 @@ class KillFeed:
         if not self._player_name:
             self._kills = 0
             return
+        # A configured name is typed by hand and may differ from the feed in
+        # case, or carry a squadron tag the feed itself does not (the HUD text
+        # is already tag-stripped by parse_event); compare both sides folded
+        # the same way rather than requiring a byte-exact match.
+        target = strip_tags(self._player_name).casefold()
         self._kills = sum(
             1
             for event in self._events
-            if event.is_kill and event.killer == self._player_name
+            if event.is_kill and strip_tags(event.killer).casefold() == target
         )
 
     def reset(self) -> None:
