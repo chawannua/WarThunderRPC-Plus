@@ -873,3 +873,100 @@ class TestStaleSpawnFrame:
         from wtrpc.ground import ammo_label, read_ground
 
         assert ammo_label(read_ground(self.SETTLED)) == ""
+
+
+# ---------------------------------------------------------------------------
+# main() -- a failure below the poll layer must cost one iteration, not the
+# whole process
+# ---------------------------------------------------------------------------
+
+
+class TestMainSurvivesBuildOrUpdateFailure:
+    def test_build_presence_raising_does_not_kill_the_process(self, tmp_path, monkeypatch):
+        from wtrpc import __main__ as main_module
+
+        calls = {"poll": 0, "sleep": 0}
+
+        class FakePoller:
+            def __init__(self, cfg):
+                pass
+
+            def poll(self):
+                calls["poll"] += 1
+                return object()  # anything that is not None
+
+        class FakePresenceManager:
+            def __init__(self, *a, **kw):
+                pass
+
+            def update(self, payload):
+                pass
+
+            def clear(self):
+                pass
+
+            def close(self):
+                pass
+
+        def fake_build_presence(state, **kwargs):
+            if calls["poll"] == 1:
+                raise RuntimeError("boom")
+            return object()
+
+        def fake_sleep(seconds):
+            calls["sleep"] += 1
+            if calls["sleep"] >= 2:
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(main_module, "Poller", FakePoller)
+        monkeypatch.setattr(main_module, "PresenceManager", FakePresenceManager)
+        monkeypatch.setattr(main_module, "build_presence", fake_build_presence)
+        monkeypatch.setattr(main_module.time, "sleep", fake_sleep)
+
+        result = main_module.main(["-c", str(tmp_path / "config.json")])
+
+        assert result == 0
+        # The loop must have kept going past the failing build_presence() call
+        # rather than letting the exception escape and kill the process.
+        assert calls["poll"] >= 2
+
+    def test_presence_update_raising_does_not_kill_the_process(self, tmp_path, monkeypatch):
+        from wtrpc import __main__ as main_module
+
+        calls = {"poll": 0, "sleep": 0}
+
+        class FakePoller:
+            def __init__(self, cfg):
+                pass
+
+            def poll(self):
+                calls["poll"] += 1
+                return object()
+
+        class FakePresenceManager:
+            def __init__(self, *a, **kw):
+                pass
+
+            def update(self, payload):
+                raise RuntimeError("discord exploded")
+
+            def clear(self):
+                pass
+
+            def close(self):
+                pass
+
+        def fake_sleep(seconds):
+            calls["sleep"] += 1
+            if calls["sleep"] >= 2:
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(main_module, "Poller", FakePoller)
+        monkeypatch.setattr(main_module, "PresenceManager", FakePresenceManager)
+        monkeypatch.setattr(main_module, "build_presence", lambda state, **kw: object())
+        monkeypatch.setattr(main_module.time, "sleep", fake_sleep)
+
+        result = main_module.main(["-c", str(tmp_path / "config.json")])
+
+        assert result == 0
+        assert calls["poll"] >= 2

@@ -596,17 +596,26 @@ def main(argv: list[str] | None = None) -> int:
                 log.info("War Thunder detected")
                 warned_offline = False
 
-            presence.update(
-                build_presence(
-                    state,
-                    show_map=cfg.show_map,
-                    show_vehicle_image=cfg.show_vehicle_image,
-                    show_flight_data=cfg.show_flight_data,
-                    dogfight_detection=cfg.dogfight_detection,
-                    show_kills=cfg.show_kills,
-                    large_image=cfg.large_image,
+            # Same reasoning as the poll() guard above: build_presence() and
+            # presence.update() are just as capable of hitting an unforeseen
+            # exception (a payload neither has ever seen, a Discord IPC quirk
+            # not already caught inside PresenceManager, ...), and until now
+            # nothing here caught it, so it fell straight through and killed
+            # the whole session over what should cost one poll.
+            try:
+                presence.update(
+                    build_presence(
+                        state,
+                        show_map=cfg.show_map,
+                        show_vehicle_image=cfg.show_vehicle_image,
+                        show_flight_data=cfg.show_flight_data,
+                        dogfight_detection=cfg.dogfight_detection,
+                        show_kills=cfg.show_kills,
+                        large_image=cfg.large_image,
+                    )
                 )
-            )
+            except Exception:
+                log.exception("Presence update failed; continuing")
             time.sleep(cfg.poll_interval)
     except KeyboardInterrupt:
         pass
