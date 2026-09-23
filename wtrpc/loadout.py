@@ -72,11 +72,13 @@ def _known_folder_documents() -> pathlib.Path | None:
         result = ctypes.windll.shell32.SHGetKnownFolderPath(  # type: ignore[attr-defined]
             ctypes.byref(folderid_documents), 0, None, ctypes.byref(buf)
         )
-        if result != 0 or not buf.value:
-            return None
-        path = pathlib.Path(buf.value)
-        ctypes.windll.ole32.CoTaskMemFree(buf)  # type: ignore[attr-defined]
-        return path
+        try:
+            if result != 0 or not buf.value:
+                return None
+            return pathlib.Path(buf.value)
+        finally:
+            # Owed on failure too; freeing NULL is a no-op.
+            ctypes.windll.ole32.CoTaskMemFree(buf)  # type: ignore[attr-defined]
     except (OSError, ValueError, AttributeError):
         return None
 
