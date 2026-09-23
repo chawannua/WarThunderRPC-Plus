@@ -85,6 +85,14 @@ $pyiArgs = @(
     "--add-data", "$(Join-Path $RepoRoot 'logo.png');."
 )
 
+# pytesseract imports these opportunistically, so whatever happens to be
+# installed on the build machine gets swept in: ~40 MB of installer and
+# ~450 MB of committed memory the app never touches.
+foreach ($module in @("numpy", "pandas", "scipy", "matplotlib", "tkinter",
+                      "cryptography", "dateutil", "setuptools", "pytest")) {
+    $pyiArgs += @("--exclude-module", $module)
+}
+
 # Bundle pytesseract only if it's actually available in this environment;
 # it's an optional dependency (weapon-HUD OCR) that PyInstaller's static
 # analysis can't see through the try/except import in wtrpc/weapon_ocr.py.
