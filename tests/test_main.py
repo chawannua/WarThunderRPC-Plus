@@ -296,15 +296,75 @@ class TestTimerResetBug:
 
 
 class TestAvailability:
-    def test_indicators_none_and_unavailable_means_the_game_is_gone(self):
+    def test_two_consecutive_failed_indicators_requests_means_the_game_is_gone(self):
         poller = make_poller()
         client = MagicMock(spec=WarThunderClient)
         client.available = False
         client.indicators.return_value = None
         poller.client = client
 
+        poller.poll()
         assert poller.poll() is None
         assert poller.activity == Activity.UNKNOWN
+
+    def test_a_single_failed_indicators_request_does_not_clear_presence(self):
+        # A stalled/garbled /indicators response used to be treated the same
+        # as "the game closed", blanking the presence for one bad poll in the
+        # middle of a match.
+        client = _client_mock(
+            in_map=True,
+            vehicle_valid=True,
+            vehicle_type="fw190a5",
+            primary_text="Destroy the enemy's forces",
+        )
+        poller = make_poller()
+        poller.client = client
+
+        state = _drive(poller)
+        assert state.activity == Activity.IN_MATCH
+
+        client.indicators.return_value = None
+        client.available = False
+
+        result = poller.poll()
+
+        assert result is state  # kept the last good snapshot
+        assert poller.activity == Activity.IN_MATCH  # not reset after one stall
+
+    def test_a_failed_request_that_recovers_does_not_carry_the_failure_forward(self):
+        client = _client_mock(
+            in_map=True,
+            vehicle_valid=True,
+            vehicle_type="fw190a5",
+            primary_text="Destroy the enemy's forces",
+        )
+        poller = make_poller()
+        poller.client = client
+        state = _drive(poller)
+
+        client.indicators.return_value = None
+        client.available = False
+        poller.poll()  # one failure
+
+        client.indicators.return_value = {
+            "valid": True,
+            "type": "fw190a5",
+            "army": "air",
+            "compass": 10.0,
+            "aviahorizon_roll": 0.0,
+        }
+        client.available = True
+        recovered = poller.poll()
+        assert recovered is not None
+        assert poller.activity == Activity.IN_MATCH
+
+        # A single new failure after the recovery must not immediately go
+        # offline either -- the counter must have reset on the good poll.
+        client.indicators.return_value = None
+        client.available = False
+        result = poller.poll()
+        assert result is state or result is recovered
+        assert poller.activity == Activity.IN_MATCH
 
     def test_indicators_none_but_available_is_not_treated_as_offline(self):
         client = _client_mock(

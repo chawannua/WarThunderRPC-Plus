@@ -190,6 +190,13 @@ class Poller:
         self._loadout_vehicle = ""
         self._weapon_checked_at = 0.0
         self._shell_checked_at = 0.0
+        # A single stalled/garbled /indicators response looks identical to
+        # "the game closed" -- both come back as None -- but War Thunder's
+        # HTTP server does drop the occasional request under load while very
+        # much still running. Only two in a row is treated as evidence the
+        # game is actually gone, so one bad poll mid-match no longer blanks
+        # the presence.
+        self._consecutive_indicator_failures = 0
 
     def _resolve_map(self, in_map: bool) -> str:
         """Identify the map, but only when it can actually have changed.
@@ -387,6 +394,14 @@ class Poller:
         indicators = self.client.indicators()
         if indicators is None:
             if not self.client.available:
+                self._consecutive_indicator_failures += 1
+                if self._consecutive_indicator_failures < 2:
+                    log.debug(
+                        "Failed /indicators request (%d/2); not yet treating "
+                        "War Thunder as closed",
+                        self._consecutive_indicator_failures,
+                    )
+                    return self.last_state
                 self.was_in_map = False
                 self.map_name = ""
                 self.last_in_map = False
@@ -395,8 +410,11 @@ class Poller:
                 return None
             # Reachable but momentarily empty: keep the last state rather than
             # announcing that War Thunder closed.
+            self._consecutive_indicator_failures = 0
             log.debug("Empty /indicators while the game is still reachable")
             return self.last_state
+
+        self._consecutive_indicator_failures = 0
 
         map_info = self.client.map_info()
         # A failed request is not evidence that the player left the map.
