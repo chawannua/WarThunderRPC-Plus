@@ -88,6 +88,7 @@ def _locate_tesseract() -> bool:
     if inner is None:
         return False
 
+    original_cmd = getattr(inner, "tesseract_cmd", None)
     for candidate in _WINDOWS_TESSERACT_PATHS:
         if not os.path.exists(candidate):
             continue
@@ -98,7 +99,28 @@ def _locate_tesseract() -> bool:
             continue
         log.debug("Found Tesseract at %s", candidate)
         return True
+
+    # None of the guessed paths worked -- leave tesseract_cmd as it was
+    # found rather than stuck pointing at the last (broken) candidate tried.
+    if original_cmd is not None:
+        inner.tesseract_cmd = original_cmd
     return False
+
+
+#: Cached result of the last successful/unsuccessful probe, so `available()`
+#: does not spawn `tesseract --version` on every call. ``None`` means "not
+#: probed yet".
+_tesseract_located: bool | None = None
+
+
+def reset_tesseract_cache() -> None:
+    """Forget the memoised Tesseract probe result.
+
+    For tests, and for the rare case a Tesseract install appears or
+    disappears while the process is running.
+    """
+    global _tesseract_located
+    _tesseract_located = None
 
 
 def _prepare_for_ocr(binary: Image.Image, scale: int = 3) -> Image.Image:
@@ -124,13 +146,25 @@ def available() -> bool:
 
     ``True`` only when ``pytesseract`` is importable AND it can find a
     working Tesseract binary. Never raises.
+
+    The underlying probe spawns ``tesseract --version`` as a subprocess, so
+    the result is memoised at module level after the first call instead of
+    being re-run on every check; call ``reset_tesseract_cache()`` to force a
+    fresh probe.
     """
+    global _tesseract_located
+    if _tesseract_located is not None:
+        return _tesseract_located
+
     if not _HAVE_PYTESSERACT:
         log.debug("pytesseract is not installed; weapon OCR unavailable")
+        _tesseract_located = False
         return False
     if not _locate_tesseract():
         log.debug("no usable Tesseract binary found")
+        _tesseract_located = False
         return False
+    _tesseract_located = True
     return True
 
 
@@ -283,6 +317,11 @@ def parse_weapon_line(text: str) -> WeaponLine | None:
         group = " ".join(tokens)
         if _is_telemetry_label(group):
             return None
+        if not _GROUP_RE.match(group):
+            # A marker alone does not vouch for text that is not a group
+            # abbreviation -- OCR occasionally hallucinates a "row" out of
+            # stray lit pixels ('mN' has turned up in a live frame).
+            return None
         return WeaponLine(selected=selected, group=group, count="", name="")
 
     group = " ".join(tokens[:count_index])
@@ -320,7 +359,12 @@ def read_shell_name(lines: list[str]) -> str:
         if not text:
             continue
         # OCR picks the sight's green dot up as a stray glyph on the front.
-        cleaned = "".join(ch for ch in text if ch.isalnum() or ch.isspace()).strip()
+        # Punctuation is replaced with a space rather than deleted, so a
+        # hyphenated read like "HE-VT" still splits into two tokens instead
+        # of gluing into "HEVT", which matches nothing.
+        cleaned = "".join(
+            ch if ch.isalnum() or ch.isspace() else " " for ch in text
+        ).strip()
         # Match whole tokens, not substrings: "NOTASHELL" contains "HE", and
         # a loose search would happily report a shell type that is not there.
         tokens = cleaned.split()

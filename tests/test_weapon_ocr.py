@@ -38,10 +38,21 @@ from wtrpc.weapon_ocr import (
     isolate_hud,
     parse_weapon_line,
     read_selected_weapon,
+    reset_tesseract_cache,
     selected_weapons,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _reset_tesseract_cache():
+    """available() memoises its probe result at module level; without this,
+    whichever test runs first would decide the answer for every test after
+    it in the same process."""
+    reset_tesseract_cache()
+    yield
+    reset_tesseract_cache()
 
 # The exact HUD block from the task spec, transcribed from a real F-4S
 # screenshot. Kept as the ground truth both fixture generation and parsing
@@ -200,6 +211,16 @@ class TestParseWeaponLineMangledInput:
             selected=True, group="AAM", count="8/4(L)", name="AIM-7F"
         )
 
+    def test_marked_garbage_row_with_no_count_is_rejected(self):
+        """A marker alone must not vouch for text that is not a group name.
+
+        Previously any marked row with no recognisable count column was
+        accepted verbatim -- including OCR noise hallucinated from stray
+        lit pixels ("mN" has turned up in a live frame) -- because only
+        ``had_marker`` gated the no-count branch.
+        """
+        assert parse_weapon_line("> mN") is None
+
 
 class TestSelectedWeapons:
     def test_returns_only_selected_in_order(self):
@@ -227,7 +248,7 @@ class TestIsolateHud:
         binary = isolate_hud(img)
         assert binary.mode == "L"
         assert binary.size == img.size
-        assert set(binary.getdata()) == {255}
+        assert set(binary.tobytes()) == {255}
 
     def test_pure_background_colors_are_rejected(self):
         # A palette of plausible non-HUD in-game colours: sky, dirt, metal,
@@ -244,19 +265,19 @@ class TestIsolateHud:
         for color in colors:
             img = Image.new("RGB", (2, 2), color)
             binary = isolate_hud(img)
-            assert set(binary.getdata()) == {0}, f"{color} was misclassified as HUD green"
+            assert set(binary.tobytes()) == {0}, f"{color} was misclassified as HUD green"
 
     def test_dominance_boundary_is_respected(self):
         # max_ratio is relaxed here so this exercises `dominance` alone; these
         # murky olive colours are exactly what the ratio test exists to reject.
         img = Image.new("RGB", (1, 1), (50, 90, 50))  # g=90,r=50,b=50 -> both diffs 40
         assert list(
-            isolate_hud(img, min_green=90, dominance=40, max_ratio=1.0).getdata()
+            isolate_hud(img, min_green=90, dominance=40, max_ratio=1.0).tobytes()
         ) == [255]
         # One below the threshold must fail.
         img2 = Image.new("RGB", (1, 1), (51, 90, 50))  # g-r=39 < 40
         assert list(
-            isolate_hud(img2, min_green=90, dominance=40, max_ratio=1.0).getdata()
+            isolate_hud(img2, min_green=90, dominance=40, max_ratio=1.0).tobytes()
         ) == [0]
 
     def test_ratio_test_rejects_what_dominance_alone_would_pass(self):
@@ -267,41 +288,41 @@ class TestIsolateHud:
         game keeps red and blue near zero.
         """
         img = Image.new("RGB", (1, 1), (50, 90, 50))
-        assert list(isolate_hud(img, min_green=90, dominance=40).getdata()) == [0]
+        assert list(isolate_hud(img, min_green=90, dominance=40).tobytes()) == [0]
 
     def test_min_green_boundary_is_respected(self):
         img = Image.new("RGB", (1, 1), (0, 90, 0))
-        assert list(isolate_hud(img, min_green=90, dominance=40).getdata()) == [255]
+        assert list(isolate_hud(img, min_green=90, dominance=40).tobytes()) == [255]
         img2 = Image.new("RGB", (1, 1), (0, 89, 0))
-        assert list(isolate_hud(img2, min_green=90, dominance=40).getdata()) == [0]
+        assert list(isolate_hud(img2, min_green=90, dominance=40).tobytes()) == [0]
 
     def test_grayscale_input_is_never_misclassified_as_hud_green(self):
         # A grayscale pixel has r == g == b, so g - r == 0 and g - b == 0,
         # which must always fail dominance regardless of brightness.
         for level in (0, 90, 128, 200, 255):
             img = Image.new("RGB", (1, 1), (level, level, level))
-            assert list(isolate_hud(img).getdata()) == [0]
+            assert list(isolate_hud(img).tobytes()) == [0]
 
     def test_custom_thresholds_are_honoured(self):
         img = Image.new("RGB", (1, 1), (61, 120, 61))  # g-r == g-b == 59
         # Fails a strict dominance of 60 but passes a looser one of 30.
         # max_ratio relaxed so only `dominance` is under test here.
         assert list(
-            isolate_hud(img, min_green=90, dominance=60, max_ratio=1.0).getdata()
+            isolate_hud(img, min_green=90, dominance=60, max_ratio=1.0).tobytes()
         ) == [0]
         assert list(
-            isolate_hud(img, min_green=90, dominance=30, max_ratio=1.0).getdata()
+            isolate_hud(img, min_green=90, dominance=30, max_ratio=1.0).tobytes()
         ) == [255]
 
     def test_background_only_fixture_produces_no_false_positives(self):
         img = Image.open(FIXTURES / "weapon_background_only.png")
         binary = isolate_hud(img)
-        assert sum(1 for v in binary.getdata() if v) == 0
+        assert sum(1 for v in binary.tobytes() if v) == 0
 
     def test_hud_fixture_isolates_a_small_fraction_of_glyph_pixels(self):
         img = Image.open(FIXTURES / "weapon_hud_full.png")
         binary = isolate_hud(img)
-        lit = sum(1 for v in binary.getdata() if v)
+        lit = sum(1 for v in binary.tobytes() if v)
         total = binary.size[0] * binary.size[1]
         # Text glyphs cover a small minority of the image, but there must be
         # a meaningful number of isolated pixels for OCR to work with.
@@ -377,6 +398,58 @@ class TestAvailable:
         monkeypatch.setattr("wtrpc.weapon_ocr._HAVE_PYTESSERACT", True)
         monkeypatch.setattr("wtrpc.weapon_ocr.pytesseract", fake)
         assert available() is True
+
+    def test_result_is_memoised_not_reprobed_every_call(self, monkeypatch):
+        calls = []
+
+        def get_version():
+            calls.append(1)
+            return "5.3.0"
+
+        fake = types.SimpleNamespace(get_tesseract_version=get_version)
+        monkeypatch.setattr("wtrpc.weapon_ocr._HAVE_PYTESSERACT", True)
+        monkeypatch.setattr("wtrpc.weapon_ocr.pytesseract", fake)
+
+        assert available() is True
+        assert available() is True
+        assert available() is True
+        assert len(calls) == 1, "available() must not spawn tesseract on every call"
+
+    def test_reset_tesseract_cache_forces_a_fresh_probe(self, monkeypatch):
+        fake = types.SimpleNamespace(get_tesseract_version=lambda: "5.3.0")
+        monkeypatch.setattr("wtrpc.weapon_ocr._HAVE_PYTESSERACT", True)
+        monkeypatch.setattr("wtrpc.weapon_ocr.pytesseract", fake)
+        assert available() is True
+
+        monkeypatch.setattr("wtrpc.weapon_ocr._HAVE_PYTESSERACT", False)
+        assert available() is True, "stale cache should still report the old result"
+
+        reset_tesseract_cache()
+        assert available() is False, "after reset the fresh state must be reprobed"
+
+
+class TestLocateTesseractRestoresCommand:
+    def test_original_tesseract_cmd_restored_when_no_candidate_works(self, monkeypatch, tmp_path):
+        from wtrpc import weapon_ocr
+
+        inner = types.SimpleNamespace(tesseract_cmd="tesseract")
+        fake = types.SimpleNamespace(
+            get_tesseract_version=lambda: (_ for _ in ()).throw(
+                FileNotFoundError("not found")
+            ),
+            pytesseract=inner,
+        )
+        monkeypatch.setattr(weapon_ocr, "_HAVE_PYTESSERACT", True)
+        monkeypatch.setattr(weapon_ocr, "pytesseract", fake)
+        # Every candidate path "exists" but still fails to produce a version,
+        # simulating an install where none of the guessed paths are real.
+        monkeypatch.setattr("os.path.exists", lambda p: True)
+
+        assert weapon_ocr._locate_tesseract() is False
+        assert inner.tesseract_cmd == "tesseract", (
+            "a failed candidate must not leave tesseract_cmd pointed at a "
+            "binary that does not work"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -691,3 +764,12 @@ class TestShellNameFromTheGunnerSight:
     @pytest.mark.parametrize("lines", [[], [""], ["   "], ["NOTASHELL"]])
     def test_nothing_to_find_is_empty_not_a_guess(self, lines):
         assert read_shell_name(lines) == ""
+
+    def test_punctuation_is_replaced_with_a_space_not_deleted(self):
+        """Deleting punctuation glues neighbouring words together.
+
+        "HE-VT" must read as the two-word shell "HE VT", not have its
+        hyphen silently dropped into "HEVT", which matches nothing.
+        """
+        assert read_shell_name(["HE-VT"]) == "HE VT"
+        assert read_shell_name(["APFSDS-T"]) == "APFSDS"
