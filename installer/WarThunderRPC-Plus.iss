@@ -39,6 +39,11 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 
+[InstallDelete]
+; An upgrade copies over the old bundle, so modules a new build no longer
+; ships would linger forever. Replace the app folder wholesale instead.
+Type: filesandordirs; Name: "{app}\wtrpc"
+
 [Files]
 Source: "{#WtrpcDistDir}\*"; DestDir: "{app}\wtrpc"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#WatcherExe}"; DestDir: "{app}"; Flags: ignoreversion
