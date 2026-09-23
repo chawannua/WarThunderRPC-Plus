@@ -43,6 +43,11 @@ def test_min_update_interval_clamped_to_floor_of_15():
     assert cfg3.min_update_interval == 30.0
 
 
+def test_min_update_interval_clamped_to_ceiling_of_300():
+    cfg = Config(min_update_interval=1_000_000.0)
+    assert cfg.min_update_interval == 300.0
+
+
 def test_poll_interval_clamped_to_floor_of_1():
     cfg = Config(poll_interval=0.1)
     assert cfg.poll_interval == 1.0
@@ -187,6 +192,68 @@ def test_load_with_default_path_uses_config_path(monkeypatch, tmp_path):
     cfg = load()
     assert cfg == Config()
     assert (tmp_path / "WarThunderRPC-Plus" / "config.json").exists()
+
+
+def test_load_bom_prefixed_file_loads_correctly(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"client_id": "999"}), encoding="utf-8-sig")
+
+    cfg = load(path)
+
+    assert cfg.client_id == "999"
+
+
+def test_load_rejects_non_finite_float_fields(tmp_path):
+    path = tmp_path / "config.json"
+    # Python's json module accepts the bare NaN/Infinity literals on read,
+    # even though they are not valid JSON -- so a hand-edited or corrupted
+    # config file can carry one straight through unless it is rejected.
+    path.write_text('{"poll_interval": NaN, "connect_timeout": Infinity}', encoding="utf-8")
+
+    cfg = load(path)
+
+    assert cfg.poll_interval == Config().poll_interval
+    assert cfg.connect_timeout == Config().connect_timeout
+
+
+def test_load_rejects_non_finite_min_update_interval(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text('{"min_update_interval": Infinity}', encoding="utf-8")
+
+    cfg = load(path)
+
+    assert cfg.min_update_interval == Config().min_update_interval
+
+
+def test_load_logs_warning_on_corrupt_json(tmp_path, caplog):
+    path = tmp_path / "config.json"
+    path.write_text("{not valid json!!", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        load(path)
+
+    assert any("config" in record.message.lower() for record in caplog.records)
+
+
+def test_load_logs_warning_on_non_dict_json(tmp_path, caplog):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        load(path)
+
+    assert any(record.levelname == "WARNING" for record in caplog.records)
+
+
+def test_load_logs_warning_on_invalid_field_value(tmp_path, caplog):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"poll_interval": "fast"}), encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        cfg = load(path)
+
+    assert cfg.poll_interval == Config().poll_interval
+    assert any(record.levelname == "WARNING" for record in caplog.records)
 
 
 def test_default_application_is_not_the_upstream_one():

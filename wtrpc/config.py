@@ -13,9 +13,13 @@ is kept.
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import pathlib
 from dataclasses import asdict, dataclass, fields
+
+log = logging.getLogger(__name__)
 
 _APP_DIR_NAME = "WarThunderRPC-Plus"
 _CONFIG_FILE_NAME = "config.json"
@@ -25,6 +29,10 @@ _POLL_INTERVAL_FLOOR = 1.0
 # once every 5s silently switches the headline feature off. Cap it instead.
 _POLL_INTERVAL_CEILING = 5.0
 _MIN_UPDATE_INTERVAL_FLOOR = 15.0
+# A runaway value here (e.g. a corrupt or hand-edited config) would leave the
+# presence stuck showing a stale state for a very long time, so it is capped
+# to something still recognisably "an update interval" rather than "never".
+_MIN_UPDATE_INTERVAL_CEILING = 300.0
 # requests raises ValueError, not a RequestException, for a non-positive
 # timeout -- which no caller catches, so an unlucky config file would kill the
 # process on its first poll.
@@ -90,7 +98,10 @@ class Config:
         object.__setattr__(
             self,
             "min_update_interval",
-            max(_MIN_UPDATE_INTERVAL_FLOOR, float(self.min_update_interval)),
+            min(
+                _MIN_UPDATE_INTERVAL_CEILING,
+                max(_MIN_UPDATE_INTERVAL_FLOOR, float(self.min_update_interval)),
+            ),
         )
         for field_name in ("connect_timeout", "read_timeout"):
             object.__setattr__(
@@ -113,24 +124,48 @@ def config_path() -> pathlib.Path:
     return base / _APP_DIR_NAME / _CONFIG_FILE_NAME
 
 
-def _coerce_field(name: str, raw_value: object, default_value: object) -> object:
-    """Return ``raw_value`` if it matches the field's expected type, else the default."""
+def _coerce_field(name: str, raw_value: object, default_value: object) -> tuple[object, bool]:
+    """Match ``raw_value`` against the field's expected type.
+
+    Returns ``(value, ok)``: ``ok`` is ``True`` when ``raw_value`` was a valid
+    value for the field (``value`` is it, coerced), and ``False`` when it was
+    rejected (``value`` is ``default_value``), so the caller can tell "this
+    field legitimately holds the default" apart from "this field's value was
+    thrown out".
+    """
     expected_type = type(default_value)
 
     if expected_type is bool:
-        return raw_value if isinstance(raw_value, bool) else default_value
+        if isinstance(raw_value, bool):
+            return raw_value, True
+        return default_value, False
 
     if expected_type is float:
         if isinstance(raw_value, bool):
-            return default_value
+            return default_value, False
         if isinstance(raw_value, (int, float)):
-            return float(raw_value)
-        return default_value
+            try:
+                coerced = float(raw_value)
+            except (OverflowError, ValueError):
+                return default_value, False
+            # NaN/Infinity are valid Python floats but nonsensical for every
+            # field this app has (an interval, a timeout): letting one through
+            # either corrupts the __post_init__ clamping (comparisons against
+            # NaN are always False) or gets silently clamped to a ceiling that
+            # was never actually requested. Treat it like any other bad value.
+            if not math.isfinite(coerced):
+                return default_value, False
+            return coerced, True
+        return default_value, False
 
     if expected_type is str:
-        return raw_value if isinstance(raw_value, str) else default_value
+        if isinstance(raw_value, str):
+            return raw_value, True
+        return default_value, False
 
-    return raw_value if isinstance(raw_value, expected_type) else default_value
+    if isinstance(raw_value, expected_type):
+        return raw_value, True
+    return default_value, False
 
 
 def load(path: pathlib.Path | str | None = None) -> Config:
@@ -143,23 +178,35 @@ def load(path: pathlib.Path | str | None = None) -> Config:
         return defaults
 
     try:
-        raw_text = resolved.read_text(encoding="utf-8")
-    except OSError:
+        # utf-8-sig transparently strips a leading BOM when present and
+        # behaves exactly like utf-8 when it is not, so files saved by
+        # editors that prepend one (Notepad among them) still load.
+        raw_text = resolved.read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        log.warning("Could not read config file %s: %s", resolved, exc)
         return defaults
 
     try:
         raw = json.loads(raw_text) if raw_text.strip() else None
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError) as exc:
+        log.warning("Config file %s is not valid JSON: %s", resolved, exc)
         return defaults
 
     if not isinstance(raw, dict):
+        log.warning("Config file %s does not contain a JSON object; using defaults", resolved)
         return defaults
 
     kwargs = {}
     for f in fields(Config):
         default_value = getattr(defaults, f.name)
         if f.name in raw:
-            kwargs[f.name] = _coerce_field(f.name, raw[f.name], default_value)
+            coerced, ok = _coerce_field(f.name, raw[f.name], default_value)
+            if not ok:
+                log.warning(
+                    "Config field %r has an invalid value %r; using default %r",
+                    f.name, raw[f.name], default_value,
+                )
+            kwargs[f.name] = coerced
         else:
             kwargs[f.name] = default_value
 
