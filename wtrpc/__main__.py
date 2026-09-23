@@ -45,6 +45,12 @@ TRANSITION_CONFIRMATIONS = 2
 # Screen-reading the weapon costs far more than an HTTP GET, so it runs on
 # its own slower cadence.
 WEAPON_READ_INTERVAL_S = 10.0
+# A save that could not be read (the game holds it while writing at spawn) is
+# retried this often rather than every poll.
+LOADOUT_RETRY_INTERVAL_S = 30.0
+# Under --managed, how long the API may stay unreachable after the game was
+# seen before this process exits and leaves the rest to the watcher.
+MANAGED_OFFLINE_EXIT_S = 10.0
 # Spawning into a match briefly looks exactly like a test flight: the player is
 # on a map in a valid vehicle, but /mission.json has not published its
 # objectives yet. Measured live, that window lasted about six seconds before
@@ -62,7 +68,9 @@ _FLYING_ACTIVITIES = (Activity.IN_MATCH, Activity.TEST_DRIVE)
 def _setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     root = logging.getLogger()
-    root.setLevel(level)
+    # The root passes everything; each handler picks its own level, so the file
+    # log carries debug detail for bug reports without -v.
+    root.setLevel(logging.DEBUG)
 
     # Presence strings contain a middle dot separator, and a Windows console
     # on a non-Latin codepage (cp874 for Thai, cp932 for Japanese, ...) raises
@@ -74,10 +82,12 @@ def _setup_logging(verbose: bool) -> None:
         except (AttributeError, ValueError, OSError):
             pass
 
-    console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(logging.Formatter("%(asctime)s  %(message)s", "%H:%M:%S"))
-    console.setLevel(level)
-    root.addHandler(console)
+    # A windowed build (and the watcher's hidden child) has no stdout at all.
+    if sys.stdout is not None:
+        console = logging.StreamHandler(sys.stdout)
+        console.setFormatter(logging.Formatter("%(asctime)s  %(message)s", "%H:%M:%S"))
+        console.setLevel(level)
+        root.addHandler(console)
 
     # A rolling file log so users can attach something useful to bug reports.
     try:
@@ -188,6 +198,14 @@ class Poller:
         self.shell = ""
         self.loadout = ""
         self._loadout_vehicle = ""
+        self._loadout_attempt = ""
+        self._loadout_checked_at = 0.0
+        # A match spans respawns: dying drops to the load screen and back, and
+        # that must not restart the clock or the kill count. It only ends in
+        # the hangar (or when the game goes away).
+        self._match_open = False
+        self._match_started_at: int | None = None
+        self.matches_finished = 0
         self._weapon_checked_at = 0.0
         self._shell_checked_at = 0.0
         # A single stalled/garbled /indicators response looks identical to
@@ -378,9 +396,24 @@ class Poller:
         if activity not in _FLYING_ACTIVITIES or previous not in _FLYING_ACTIVITIES:
             self.analyzer.reset()
         if activity is Activity.IN_MATCH:
-            # HUD message ids restart with each match, so a stale cursor would
-            # skip the whole new feed and report zero kills all match.
-            self.killfeed.reset()
+            if self._match_open:
+                # Back from the respawn screen: same match, same clock.
+                self.activity_since = self._match_started_at
+            else:
+                self._match_open = True
+                self._match_started_at = self.activity_since
+                # HUD message ids restart with each match, so a stale cursor
+                # would skip the whole new feed and report zero kills all match.
+                self.killfeed.reset()
+        elif activity in (Activity.HANGAR, Activity.UNKNOWN):
+            if self._match_open and activity is Activity.HANGAR:
+                self.matches_finished += 1
+            self._match_open = False
+            # The next sortie may bring a different belt or the same tank
+            # fresh from repair, so nothing per-vehicle survives the hangar.
+            self._ground_vehicle = ""
+            self._loadout_vehicle = ""
+            self._loadout_attempt = ""
 
     def poll(self) -> GameState | None:
         """Build one snapshot, or ``None`` when War Thunder is unreachable.
@@ -488,18 +521,30 @@ class Poller:
         ground = Ground()
         air_state = AirState.UNKNOWN
         if army in (Army.TANK, Army.SHIP) and effective_activity in _FLYING_ACTIVITIES:
-            if vehicle_id != self._ground_vehicle:
-                # Same vehicle next poll means the reading can be trusted.
-                self._ground_vehicle = vehicle_id
+            if not vehicle_valid or vehicle_id != self._ground_vehicle:
+                # Same vehicle next poll means the reading can be trusted. An
+                # invalid frame is the respawn screen, and respawning in the
+                # same vehicle brings the same one-frame wreck with it.
+                if vehicle_id != self._ground_vehicle:
+                    self.shell = ""
+                self._ground_vehicle = vehicle_id if vehicle_valid else ""
                 ground = Ground()
             else:
                 ground = read_ground(indicators)
             # The save file only changes between sorties, so read it once per
-            # vehicle rather than on every poll.
-            if vehicle_id != self._loadout_vehicle:
-                self._loadout_vehicle = vehicle_id
+            # vehicle rather than on every poll -- but a failed read (the game
+            # holds the file while writing it) is retried on a timer instead of
+            # being cached as "no loadout" for the rest of the vehicle's life.
+            now = time.monotonic()
+            if vehicle_id != self._loadout_vehicle and (
+                vehicle_id != self._loadout_attempt
+                or now - self._loadout_checked_at >= LOADOUT_RETRY_INTERVAL_S
+            ):
+                self._loadout_attempt = vehicle_id
+                self._loadout_checked_at = now
                 self.loadout = loadout_label(read_loadout(vehicle_id))
                 if self.loadout:
+                    self._loadout_vehicle = vehicle_id
                     log.debug("Loadout for %s: %s", vehicle_id, self.loadout)
             ground = dataclasses.replace(ground, loadout=self.loadout)
             if self.cfg.show_weapon:
@@ -551,6 +596,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     parser.add_argument("-c", "--config", type=Path, default=None, help="config file path")
+    parser.add_argument(
+        "--managed",
+        action="store_true",
+        help="run under the watcher: exit after each match and once the game closes",
+    )
     args = parser.parse_args(argv)
 
     _setup_logging(args.verbose)
@@ -573,6 +623,8 @@ def main(argv: list[str] | None = None) -> int:
         pass  # SIGTERM is not always available on Windows
 
     warned_offline = False
+    seen_game = False
+    offline_since: float | None = None
     try:
         while running:
             # This runs unattended for hours next to a game. An unforeseen
@@ -588,9 +640,27 @@ def main(argv: list[str] | None = None) -> int:
                 if not warned_offline:
                     log.info("Waiting for War Thunder... (is the game running?)")
                     warned_offline = True
+                if args.managed and seen_game:
+                    # The watcher started us for this game session. Before the
+                    # API has ever answered the game is still booting, so only
+                    # an API that went away counts as the game closing.
+                    now = time.monotonic()
+                    if offline_since is None:
+                        offline_since = now
+                    elif now - offline_since >= MANAGED_OFFLINE_EXIT_S:
+                        log.info("War Thunder closed; exiting")
+                        break
                 presence.clear()
                 time.sleep(OFFLINE_POLL_INTERVAL_S)
                 continue
+
+            seen_game = True
+            offline_since = None
+            if args.managed and poller.matches_finished:
+                # A new process per match keeps a long session from carrying
+                # any state, or any leak, from one match into the next.
+                log.info("Match finished; exiting for a fresh start")
+                break
 
             if warned_offline:
                 log.info("War Thunder detected")

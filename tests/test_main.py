@@ -970,3 +970,233 @@ class TestMainSurvivesBuildOrUpdateFailure:
 
         assert result == 0
         assert calls["poll"] >= 2
+
+
+
+# ---------------------------------------------------------------------------
+# Respawns and match boundaries
+# ---------------------------------------------------------------------------
+
+
+def _match_client(**overrides) -> MagicMock:
+    kwargs = dict(
+        in_map=True,
+        vehicle_valid=True,
+        vehicle_type="us_m1_abrams",
+        army="tank",
+        primary_text="Capture the point",
+    )
+    kwargs.update(overrides)
+    return _client_mock(**kwargs)
+
+
+def _respawn(poller: Poller, client: MagicMock) -> None:
+    """Die, sit on the respawn screen long enough to commit LOADING, spawn again."""
+    client.indicators.return_value = {**client.indicators.return_value, "valid": False}
+    _drive(poller)
+    assert poller.activity is Activity.LOADING
+    client.indicators.return_value = {**client.indicators.return_value, "valid": True}
+    _drive(poller)
+    assert poller.activity is Activity.IN_MATCH
+
+
+class TestRespawnKeepsTheMatch:
+    def test_respawn_keeps_the_match_timer(self, monkeypatch):
+        monkeypatch.setattr("wtrpc.__main__.read_loadout", lambda _v: [])
+        client = _match_client()
+        poller = make_poller()
+        poller.client = client
+        _drive(poller)
+        started_at = poller.activity_since
+
+        monkeypatch.setattr("wtrpc.__main__.time.time", lambda: started_at + 600)
+        _respawn(poller, client)
+
+        assert poller.activity_since == started_at
+        assert poller.poll().match_started_at == started_at
+
+    def test_respawn_does_not_reset_the_kill_feed(self, monkeypatch):
+        monkeypatch.setattr("wtrpc.__main__.read_loadout", lambda _v: [])
+        client = _match_client()
+        poller = make_poller()
+        poller.client = client
+        _drive(poller)
+        poller.killfeed = MagicMock()
+        poller.killfeed.kills = 2
+
+        _respawn(poller, client)
+
+        poller.killfeed.reset.assert_not_called()
+
+    def test_a_new_match_after_the_hangar_resets_the_kill_feed(self, monkeypatch):
+        monkeypatch.setattr("wtrpc.__main__.read_loadout", lambda _v: [])
+        client = _match_client()
+        poller = make_poller()
+        poller.client = client
+        _drive(poller)
+        poller.killfeed = MagicMock()
+        poller.killfeed.kills = 0
+
+        client.map_info.return_value = {"valid": False}
+        _drive(poller)
+        assert poller.activity is Activity.HANGAR
+        client.map_info.return_value = {"valid": True}
+        _drive(poller)
+
+        poller.killfeed.reset.assert_called_once()
+
+
+class TestMatchFinished:
+    def test_returning_to_the_hangar_after_a_match_counts_one_finished_match(self, monkeypatch):
+        monkeypatch.setattr("wtrpc.__main__.read_loadout", lambda _v: [])
+        client = _match_client()
+        poller = make_poller()
+        poller.client = client
+        _drive(poller)
+        assert poller.matches_finished == 0
+
+        _respawn(poller, client)
+        assert poller.matches_finished == 0
+
+        client.map_info.return_value = {"valid": False}
+        _drive(poller)
+        assert poller.matches_finished == 1
+
+    def test_leaving_a_test_drive_is_not_a_finished_match(self):
+        client = _client_mock(in_map=True, vehicle_valid=True)
+        poller = make_poller()
+        poller.client = client
+        _drive(poller)
+        assert poller.activity is Activity.TEST_DRIVE
+
+        client.map_info.return_value = {"valid": False}
+        _drive(poller)
+        assert poller.matches_finished == 0
+
+
+class TestPerVehicleStateIsNotStale:
+    def test_loadout_is_reread_after_the_hangar(self, monkeypatch):
+        reads = []
+        monkeypatch.setattr(
+            "wtrpc.__main__.read_loadout", lambda v: reads.append(v) or ["x"]
+        )
+        monkeypatch.setattr("wtrpc.__main__.loadout_label", lambda _l: "APFSDS")
+        client = _match_client()
+        poller = make_poller()
+        poller.client = client
+        _drive(poller)
+        client.map_info.return_value = {"valid": False}
+        _drive(poller)
+        client.map_info.return_value = {"valid": True}
+        _drive(poller)
+
+        assert len(reads) == 2
+
+    def test_an_empty_loadout_read_is_retried(self, monkeypatch):
+        results = [[], ["x"]]
+        monkeypatch.setattr("wtrpc.__main__.read_loadout", lambda _v: results.pop(0))
+        monkeypatch.setattr(
+            "wtrpc.__main__.loadout_label", lambda l: "APFSDS" if l else ""
+        )
+        clock = [1000.0]
+        monkeypatch.setattr("wtrpc.__main__.time.monotonic", lambda: clock[0])
+        client = _match_client()
+        poller = make_poller()
+        poller.client = client
+        _drive(poller)
+        assert poller.loadout == ""
+
+        clock[0] += 60
+        poller.poll()
+        assert poller.loadout == "APFSDS"
+
+    def test_same_vehicle_respawn_ignores_the_wreck_frame(self, monkeypatch):
+        monkeypatch.setattr("wtrpc.__main__.read_loadout", lambda _v: [])
+        from wtrpc.models import Ground
+
+        wreck = Ground(crew_alive=0, crew_total=4)
+        monkeypatch.setattr("wtrpc.__main__.read_ground", lambda _i: wreck)
+        client = _match_client()
+        poller = make_poller()
+        poller.client = client
+        _drive(poller, 4)
+
+        client.indicators.return_value = {**client.indicators.return_value, "valid": False}
+        poller.poll()
+        client.indicators.return_value = {**client.indicators.return_value, "valid": True}
+        state = poller.poll()
+
+        assert state.ground.crew_alive is None
+
+    def test_shell_is_cleared_when_the_vehicle_changes(self, monkeypatch):
+        monkeypatch.setattr("wtrpc.__main__.read_loadout", lambda _v: [])
+        client = _match_client()
+        poller = make_poller()
+        poller.client = client
+        _drive(poller)
+        poller.shell = "APFSDS"
+
+        client.indicators.return_value = {
+            **client.indicators.return_value,
+            "type": "germ_leopard_2a6",
+        }
+        poller.poll()
+
+        assert poller.shell == ""
+
+
+class TestManagedMode:
+    def _main_with(self, monkeypatch, states):
+        from wtrpc import __main__ as m
+
+        polls = iter(states)
+        self.polls_made = 0
+
+        class FakePoller:
+            def __init__(self, _cfg):
+                self.matches_finished = 0
+
+            def poll(inner):
+                self.polls_made += 1
+                item = next(polls, KeyboardInterrupt())
+                if isinstance(item, BaseException):
+                    raise item
+                if item == "finish":
+                    inner.matches_finished += 1
+                    return MagicMock()
+                return item
+
+        presence = MagicMock()
+        monkeypatch.setattr(m, "Poller", FakePoller)
+        monkeypatch.setattr(m, "PresenceManager", lambda *_a: presence)
+        monkeypatch.setattr(m, "build_presence", lambda *_a, **_k: MagicMock())
+        monkeypatch.setattr(m, "_setup_logging", lambda _v: None)
+        clock = [0.0]
+        monkeypatch.setattr(m.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+        monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(m.config_module, "load", lambda _p: config_module.Config())
+        return m, presence
+
+    def test_managed_exits_after_a_finished_match(self, monkeypatch):
+        m, presence = self._main_with(monkeypatch, [MagicMock(), "finish"] + [MagicMock()] * 5)
+        assert m.main(["--managed"]) == 0
+        assert self.polls_made == 2
+        presence.close.assert_called_once()
+
+    def test_managed_exits_once_the_game_has_been_gone_a_while(self, monkeypatch):
+        # OFFLINE_POLL_INTERVAL_S is 5 s, so the 10 s grace is spent within 3 polls.
+        m, _ = self._main_with(monkeypatch, [MagicMock()] + [None] * 20)
+        assert m.main(["--managed"]) == 0
+        assert self.polls_made <= 5
+
+    def test_managed_waits_for_a_game_it_has_never_seen(self, monkeypatch):
+        # Still booting: the watcher only launches us once aces.exe exists, and
+        # the HTTP server comes up later. Nothing but the interrupt may end it.
+        m, _ = self._main_with(monkeypatch, [None] * 30)
+        assert m.main(["--managed"]) == 0
+        assert self.polls_made == 31
+
+    def test_unmanaged_keeps_running_after_a_match(self, monkeypatch):
+        m, _ = self._main_with(monkeypatch, [MagicMock(), "finish", MagicMock()])
+        assert m.main([]) == 0
+        assert self.polls_made == 4
