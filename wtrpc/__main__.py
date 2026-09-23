@@ -468,13 +468,26 @@ class Poller:
 
         self._set_activity(activity)
 
+        # Everything below must act on the COMMITTED activity, not the raw
+        # per-poll one: the debounce in _set_activity exists precisely so a
+        # single stray poll cannot be believed, but only the match timer was
+        # actually reading self.activity -- GameState, the match-mode latch,
+        # telemetry/weapon/shell gating and kill counting were all still
+        # driven by the unconfirmed `activity`, which defeated the debounce
+        # for everything except the clock. The one exception is before the
+        # very first transition has ever been confirmed (self.activity is
+        # still UNKNOWN), when there is nothing committed yet to fall back to.
+        effective_activity = (
+            self.activity if self.activity is not Activity.UNKNOWN else activity
+        )
+
         # Test Flight is how most people first try this app, and /state serves
         # full telemetry there, so gating the headline feature on IN_MATCH hid
         # it exactly when a new user was looking for it.
         flight = Flight()
         ground = Ground()
         air_state = AirState.UNKNOWN
-        if army in (Army.TANK, Army.SHIP) and activity in _FLYING_ACTIVITIES:
+        if army in (Army.TANK, Army.SHIP) and effective_activity in _FLYING_ACTIVITIES:
             if vehicle_id != self._ground_vehicle:
                 # Same vehicle next poll means the reading can be trusted.
                 self._ground_vehicle = vehicle_id
@@ -492,9 +505,9 @@ class Poller:
             if self.cfg.show_weapon:
                 self.shell = self._read_shell()
                 ground = dataclasses.replace(ground, shell=self.shell)
-        elif activity not in _FLYING_ACTIVITIES:
+        elif effective_activity not in _FLYING_ACTIVITIES:
             self.shell = ""
-        if army is Army.AIR and activity in _FLYING_ACTIVITIES:
+        if army is Army.AIR and effective_activity in _FLYING_ACTIVITIES:
             # The minimap tells us whether anyone is actually out there, which
             # is the only way to tell a turning fight from hard aerobatics.
             hostile_km = nearest_hostile_km(markers, map_info)
@@ -502,24 +515,24 @@ class Poller:
             self.analyzer.add(flight, time.monotonic())
             air_state = self.analyzer.state()
 
-        if self.cfg.show_weapon and army is Army.AIR and activity in _FLYING_ACTIVITIES:
+        if self.cfg.show_weapon and army is Army.AIR and effective_activity in _FLYING_ACTIVITIES:
             self.weapon = self._read_weapon()
-        elif activity not in _FLYING_ACTIVITIES:
+        elif effective_activity not in _FLYING_ACTIVITIES:
             self.weapon = ""
 
         kills = 0
-        if activity is Activity.IN_MATCH and self.cfg.show_kills:
+        if effective_activity is Activity.IN_MATCH and self.cfg.show_kills:
             self.killfeed.identify_player(vehicle_id)
             self.killfeed.poll()
             kills = self.killfeed.kills
 
         state = GameState(
-            activity=activity,
+            activity=effective_activity,
             army=army,
             vehicle_id=vehicle_id,
             vehicle_name=vehicle_name,
             map_name=map_name,
-            mode=self._match_mode(objective, army, activity, markers),
+            mode=self._match_mode(objective, army, effective_activity, markers),
             flight=flight,
             ground=ground,
             air_state=air_state,

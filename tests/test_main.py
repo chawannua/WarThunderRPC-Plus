@@ -237,6 +237,45 @@ class TestStateMachine:
         assert poller.activity == Activity.UNKNOWN
         assert poller.activity_since is None
 
+    def test_unconfirmed_transition_does_not_leak_into_the_reported_state(self):
+        """The debounce in ``_set_activity`` used to protect only the timer:
+        the raw, unconfirmed per-poll activity still drove ``GameState``,
+        ``_match_mode``, and kill counting, so a single stray poll (e.g. one
+        dropped /map_info request making the map briefly look empty) could
+        report a match as ended and stop counting kills for a poll even
+        though the committed activity had not actually changed.
+        """
+        client = _client_mock(
+            in_map=True,
+            vehicle_valid=True,
+            vehicle_type="fw190a5",
+            primary_text="Destroy the enemy's forces",
+        )
+        poller = make_poller(show_kills=True)
+        poller.client = client
+        poller.killfeed.identify_player = lambda vid: None
+        poller.killfeed.poll = lambda: None
+
+        state = _drive(poller)
+        assert state.activity == Activity.IN_MATCH
+        assert poller.activity == Activity.IN_MATCH
+
+        # Set after the match-entry transition commits, since committing into
+        # IN_MATCH itself resets the killfeed (new match, ids restart).
+        poller.killfeed._kills = 5
+
+        # One stray poll reporting HANGAR (e.g. in_map flickered false for a
+        # single request). This must not be believed yet -- committed
+        # activity requires TRANSITION_CONFIRMATIONS agreeing polls.
+        client.map_info.return_value = {"valid": False}
+
+        next_state = poller.poll()
+
+        assert poller.activity == Activity.IN_MATCH  # unconfirmed, unchanged
+        assert next_state.activity == Activity.IN_MATCH  # reported state agrees
+        assert next_state.kills == 5  # kill counting still gated on committed
+        assert next_state.mode  # match mode still latched
+
 
 # ---------------------------------------------------------------------------
 # 13. The timer reset bug
