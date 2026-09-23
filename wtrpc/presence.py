@@ -81,9 +81,25 @@ class PresenceManager:
         try:
             from pypresence import Presence
 
-            self._rpc = Presence(self._client_id)
+            # Short timeouts on purpose: this runs inside a polling loop next
+            # to a game, and pypresence's defaults (30s connect, 10s response)
+            # would happily stall a whole poll cycle waiting on a Discord that
+            # is simply not there.
+            self._rpc = Presence(
+                self._client_id, connection_timeout=2, response_timeout=2
+            )
             self._rpc.connect()
         except Exception as exc:  # pypresence raises a wide variety of types
+            # The constructor can succeed and leave a live socket/event loop
+            # behind even when the subsequent .connect() call is what failed;
+            # close it before dropping the reference so a repeatedly failing
+            # connect() (e.g. Discord not running) does not leak one of each
+            # per attempt over a long-running session.
+            if self._rpc is not None:
+                try:
+                    self._rpc.close()
+                except Exception:
+                    pass
             self._rpc = None
             self._connected = False
             delay = RECONNECT_BACKOFF_S[min(self._failures, len(RECONNECT_BACKOFF_S) - 1)]
@@ -118,6 +134,15 @@ class PresenceManager:
         delay = RECONNECT_BACKOFF_S[min(self._failures, len(RECONNECT_BACKOFF_S) - 1)]
         self._failures += 1
         log.warning("Lost the Discord connection (%s); retrying in %.0fs", exc, delay)
+        # The old client still owns an IPC socket and an event loop; dropping
+        # the reference without closing it first leaked both on every
+        # connection failure, which piles up over an unattended multi-hour
+        # session sitting next to a game.
+        if self._rpc is not None:
+            try:
+                self._rpc.close()
+            except Exception:
+                pass
         self._connected = False
         self._rpc = None
         self._last_sent = None

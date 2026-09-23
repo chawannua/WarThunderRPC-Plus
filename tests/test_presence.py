@@ -304,3 +304,50 @@ class TestConnectFailures:
             clock.now = 1.0  # still within the shortest (2.0s) backoff window
             assert manager.connect() is False
             mock_presence_cls.assert_called_once()  # never attempted again
+
+
+# ---------------------------------------------------------------------------
+# 9. Connecting passes short timeouts, and a dropped/replaced client is closed
+# ---------------------------------------------------------------------------
+
+
+class TestConnectionHygiene:
+    def test_connect_passes_short_timeouts(self, mock_presence_cls):
+        manager = PresenceManager("client-id")
+
+        manager.connect()
+
+        mock_presence_cls.assert_called_once_with(
+            "client-id", connection_timeout=2, response_timeout=2
+        )
+
+    def test_drop_connection_closes_the_old_client(self, mock_presence_cls):
+        instance = mock_presence_cls.return_value
+        clock = FakeClock(0.0)
+        with patch("wtrpc.presence.time.monotonic", new=clock):
+            manager = PresenceManager("client-id", min_update_interval=15.0)
+            manager.update(_payload("A", "1"))
+            assert manager.connected is True
+
+            clock.now = 20.0
+            instance.update.side_effect = ConnectionError("pipe closed")
+            manager.update(_payload("B", "2"))
+
+            assert manager.connected is False
+            instance.close.assert_called_once()
+
+    def test_drop_connection_survives_close_raising(self, mock_presence_cls):
+        instance = mock_presence_cls.return_value
+        clock = FakeClock(0.0)
+        with patch("wtrpc.presence.time.monotonic", new=clock):
+            manager = PresenceManager("client-id", min_update_interval=15.0)
+            manager.update(_payload("A", "1"))
+
+            clock.now = 20.0
+            instance.close.side_effect = RuntimeError("already gone")
+            instance.update.side_effect = ConnectionError("pipe closed")
+
+            # Must not raise even though closing the old client itself fails.
+            result = manager.update(_payload("B", "2"))
+            assert result is False
+            assert manager.connected is False
