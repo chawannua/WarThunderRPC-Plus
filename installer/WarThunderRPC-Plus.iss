@@ -62,17 +62,21 @@ begin
   if FileExists(WatcherPath) then
     Exec(WatcherPath, '--stop', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
-  { Fallback in case the watcher wasn't running / didn't stop its child. }
+  { Fallback in case the watcher wasn't running, is too old to know --stop,
+    or didn't stop its child. }
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM wtrpc-watcher.exe', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM wtrpc.exe', '', SW_HIDE,
     ewWaitUntilTerminated, ResultCode);
 end;
 
-function InitializeSetup(): Boolean;
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   { Covers both a fresh run over a previous install and an upgrade: stop any
-    running watcher/app before files get overwritten. }
+    running watcher/app before files get overwritten. This cannot live in
+    InitializeSetup, which runs before the app constant has a value. }
   StopRunningApp();
-  Result := True;
+  Result := '';
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
