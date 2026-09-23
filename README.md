@@ -60,6 +60,20 @@ In a Ground RB battle there are usually no enemy *aircraft* to measure against, 
 
 ## Install
 
+### One click (Windows)
+
+Download `WarThunderRPC-Plus-Setup-<version>.exe` from the releases page and run it. No admin rights and no Python needed. After that there is nothing to open:
+
+- A small watcher (`wtrpc-watcher.exe`, about 1 MB of memory) starts with Windows and sits idle.
+- When War Thunder (`aces.exe`) starts, it launches the presence app; when the game closes, the app goes with it.
+- After every match the app exits and is started again, so each match begins from a clean slate.
+
+It installs to `%LOCALAPPDATA%\Programs\WarThunderRPC-Plus`. Remove it from *Settings → Apps*, which also stops the watcher and removes it from startup.
+
+To build the installer yourself you need MinGW-w64 (GCC) and Inno Setup 6, then run `./build.ps1`.
+
+### From source
+
 ```bash
 git clone https://github.com/chawannua/WarThunderRPC-Plus.git
 cd WarThunderRPC-Plus
@@ -67,7 +81,7 @@ pip install -r requirements.txt
 python -m wtrpc
 ```
 
-Start it whenever you like — before or after War Thunder, before or after Discord. It waits for both and reconnects on its own. `-v` turns on debug logging; a rolling log is kept beside the config file.
+Start it whenever you like — before or after War Thunder, before or after Discord. It waits for both and reconnects on its own. `-v` turns on debug logging; a rolling log is kept beside the config file. `--managed` is what the watcher uses: exit after each finished match and once the game has closed.
 
 ## Configuration
 
