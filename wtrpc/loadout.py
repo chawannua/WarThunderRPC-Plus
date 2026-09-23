@@ -26,17 +26,93 @@ install, or an unparseable block all come back empty.
 from __future__ import annotations
 
 import logging
-import os
 import pathlib
 import re
+import sys
 
 log = logging.getLogger(__name__)
 
 #: Where the profile save lives under the user's Documents folder.
 _SAVE_GLOBS = (
-    "Documents/My Games/WarThunder/Saves/last/production/global.blk",
-    "Documents/My Games/WarThunder/Saves/*/production/global.blk",
+    "My Games/WarThunder/Saves/last/production/global.blk",
+    "My Games/WarThunder/Saves/*/production/global.blk",
 )
+
+
+def _known_folder_documents() -> pathlib.Path | None:
+    """Ask Windows for the real Documents folder via the shell API.
+
+    OneDrive can silently redirect "Documents" outside ``~/Documents``;
+    querying the shell directly (``FOLDERID_Documents``) is the only
+    reliable way to find where War Thunder actually writes its saves.
+    Returns ``None`` off Windows or when the lookup fails for any reason.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", wintypes.DWORD),
+                ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD),
+                ("Data4", ctypes.c_ubyte * 8),
+            ]
+
+        folderid_documents = _GUID(
+            0xFDD39AD0,
+            0x238F,
+            0x46AF,
+            (ctypes.c_ubyte * 8)(0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7),
+        )
+
+        buf = ctypes.c_wchar_p()
+        result = ctypes.windll.shell32.SHGetKnownFolderPath(  # type: ignore[attr-defined]
+            ctypes.byref(folderid_documents), 0, None, ctypes.byref(buf)
+        )
+        if result != 0 or not buf.value:
+            return None
+        path = pathlib.Path(buf.value)
+        ctypes.windll.ole32.CoTaskMemFree(buf)  # type: ignore[attr-defined]
+        return path
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _documents_dirs() -> list[pathlib.Path]:
+    """Return candidate Documents folders to search, most authoritative first.
+
+    Injectable/monkeypatchable so callers (and tests) can control where
+    ``save_file`` looks without touching the real filesystem.
+    """
+    home = pathlib.Path.home()
+    candidates = [
+        _known_folder_documents(),
+        home / "Documents",
+        home / "OneDrive" / "Documents",
+    ]
+
+    deduped: list[pathlib.Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _safe_mtime(path: pathlib.Path) -> float:
+    """``path.stat().st_mtime``, or 0.0 when the stat call itself fails."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
 
 _BULLET_RE = re.compile(
     r'USEROPT_BULLETS(\d+)\s*:\s*t\s*=\s*"([^"]*)"', re.ASCII
@@ -66,19 +142,27 @@ _SHELL_PATTERNS: tuple[tuple[str, str], ...] = (
 
 
 def save_file() -> pathlib.Path | None:
-    """Locate the profile save, or ``None`` when it cannot be found."""
-    home = pathlib.Path(os.path.expanduser("~"))
-    for pattern in _SAVE_GLOBS:
-        if "*" in pattern:
-            matches = sorted(
-                home.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True
-            )
-            if matches:
-                return matches[0]
-        else:
-            candidate = home / pattern
-            if candidate.exists():
-                return candidate
+    """Locate the profile save, or ``None`` when it cannot be found.
+
+    Never raises: an unreadable Documents folder or a save whose ``stat()``
+    fails (permissions, a vanished file) is skipped rather than propagated.
+    """
+    try:
+        for base in _documents_dirs():
+            for pattern in _SAVE_GLOBS:
+                try:
+                    if "*" in pattern:
+                        matches = sorted(base.glob(pattern), key=_safe_mtime, reverse=True)
+                        if matches:
+                            return matches[0]
+                    else:
+                        candidate = base / pattern
+                        if candidate.exists():
+                            return candidate
+                except OSError as exc:
+                    log.debug("Could not search %s: %s", base, exc)
+    except OSError as exc:
+        log.debug("Could not resolve Documents folders: %s", exc)
     return None
 
 
@@ -129,7 +213,11 @@ def read_loadout(vehicle_id: str, path: pathlib.Path | None = None) -> list[tupl
     if not vehicle_id:
         return []
 
-    resolved = path or save_file()
+    try:
+        resolved = path or save_file()
+    except OSError as exc:
+        log.debug("Could not locate War Thunder profile save: %s", exc)
+        return []
     if resolved is None:
         log.debug("War Thunder profile save not found")
         return []

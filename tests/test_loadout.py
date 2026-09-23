@@ -5,8 +5,11 @@ The block below is copied verbatim from a real War Thunder profile save.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
+import wtrpc.loadout as loadout
 from wtrpc.loadout import (
     classify_shell,
     loadout_label,
@@ -134,3 +137,68 @@ def test_save_file_lookup_does_not_raise():
     """It may or may not find one depending on the machine; it must not blow up."""
     result = save_file()
     assert result is None or result.name == "global.blk"
+
+
+class TestDocumentsDirs:
+    def test_dedupes_case_insensitively(self, monkeypatch):
+        monkeypatch.setattr(loadout, "_known_folder_documents", lambda: pathlib.Path("C:/Users/x/Documents"))
+        monkeypatch.setattr(pathlib.Path, "home", lambda: pathlib.Path("C:/Users/x"))
+        dirs = loadout._documents_dirs()
+        lowered = [str(d).lower() for d in dirs]
+        assert len(lowered) == len(set(lowered)), "duplicate Documents dirs must be deduped"
+
+    def test_falls_back_when_shell_lookup_unavailable(self, monkeypatch):
+        monkeypatch.setattr(loadout, "_known_folder_documents", lambda: None)
+        monkeypatch.setattr(pathlib.Path, "home", lambda: pathlib.Path("C:/Users/x"))
+        dirs = loadout._documents_dirs()
+        assert pathlib.Path("C:/Users/x/Documents") in dirs
+        assert pathlib.Path("C:/Users/x/OneDrive/Documents") in dirs
+
+    def test_known_folder_result_comes_first(self, monkeypatch):
+        shell_dir = pathlib.Path("D:/Redirected/Documents")
+        monkeypatch.setattr(loadout, "_known_folder_documents", lambda: shell_dir)
+        monkeypatch.setattr(pathlib.Path, "home", lambda: pathlib.Path("C:/Users/x"))
+        dirs = loadout._documents_dirs()
+        assert dirs[0] == shell_dir
+
+
+class TestSaveFileResolution:
+    def test_uses_injectable_base_dirs(self, monkeypatch, tmp_path):
+        """save_file() must search whatever _documents_dirs() returns."""
+        save_dir = tmp_path / "My Games" / "WarThunder" / "Saves" / "last" / "production"
+        save_dir.mkdir(parents=True)
+        (save_dir / "global.blk").write_text("x", encoding="utf-8")
+        monkeypatch.setattr(loadout, "_documents_dirs", lambda: [tmp_path])
+        assert save_file() == save_dir / "global.blk"
+
+    def test_never_raises_when_a_candidate_mtime_is_unreadable(self, monkeypatch, tmp_path):
+        """A permission error on one save's stat() must not escape save_file()."""
+        base = tmp_path / "My Games" / "WarThunder" / "Saves"
+        for name in ("alpha", "beta"):
+            d = base / name / "production"
+            d.mkdir(parents=True)
+            (d / "global.blk").write_text("x", encoding="utf-8")
+        monkeypatch.setattr(loadout, "_documents_dirs", lambda: [tmp_path])
+
+        real_stat = pathlib.Path.stat
+
+        def flaky_stat(self, *a, **kw):
+            if self.parent.parent.name == "alpha":
+                raise OSError("permission denied")
+            return real_stat(self, *a, **kw)
+
+        monkeypatch.setattr(pathlib.Path, "stat", flaky_stat)
+        result = save_file()
+        assert result is not None and result.name == "global.blk"
+
+    def test_never_raises_when_no_documents_dirs_are_readable(self, monkeypatch):
+        monkeypatch.setattr(loadout, "_documents_dirs", lambda: [pathlib.Path("Z:/does/not/exist")])
+        assert save_file() is None
+
+
+def test_read_loadout_never_raises_even_if_save_file_blows_up(monkeypatch):
+    def boom():
+        raise OSError("disk error")
+
+    monkeypatch.setattr(loadout, "save_file", boom)
+    assert read_loadout("us_m1a2_sep2_abrams") == []
