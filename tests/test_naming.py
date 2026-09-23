@@ -91,3 +91,12 @@ class TestEncyclopediaUrls:
 
     def test_encyclopedia_image_url_empty_for_placeholder(self):
         assert encyclopedia_image_url("DUMMY_PLANE") == ""
+
+    def test_encyclopedia_image_url_quotes_unsafe_characters(self):
+        """vehicle_id must be percent-encoded, not interpolated raw -- a
+        stray '/' would otherwise be read as an extra path segment."""
+        url = encyclopedia_image_url("us/m1 abrams#1")
+        assert url == (
+            "https://static.encyclopedia.warthunder.com/images/"
+            "us%2Fm1%20abrams%231.png"
+        )

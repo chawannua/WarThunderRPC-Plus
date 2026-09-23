@@ -26,6 +26,12 @@ _VERBS: dict[Army, str] = {
 _DEFAULT_DETAILS = "War Thunder"
 _DEFAULT_STATE = "..."
 
+#: Discord's activity API rejects details/state text shorter than this.
+_MIN_FIELD_LEN = 2
+
+#: Discord's activity API rejects image URLs longer than this.
+_MAX_IMAGE_URL_LEN = 256
+
 
 def _truncate(text: str, max_len: int = MAX_FIELD_LEN) -> str:
     """Truncate to ``max_len`` characters, adding an ellipsis when cut."""
@@ -213,14 +219,18 @@ def build_presence(
     else:
         details, state_text = _build_unknown(state)
 
-    details = _truncate(details) if details else _DEFAULT_DETAILS
-    state_text = _truncate(state_text) if state_text else _DEFAULT_STATE
+    details = _truncate(details) if details else ""
+    if len(details) < _MIN_FIELD_LEN:
+        details = _DEFAULT_DETAILS
+    state_text = _truncate(state_text) if state_text else ""
+    if len(state_text) < _MIN_FIELD_LEN:
+        state_text = _DEFAULT_STATE
 
     small_image = None
     small_text = None
     if show_vehicle_image and state.vehicle_id and not is_placeholder(state.vehicle_id):
         url = encyclopedia_image_url(state.vehicle_id)
-        if url:
+        if url and len(url) <= _MAX_IMAGE_URL_LEN:
             small_image = url
             if state.vehicle_name:
                 small_text = _truncate(state.vehicle_name)

@@ -9,6 +9,8 @@ a camera name rather than a real vehicle.
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 PLACEHOLDER_IDS: set[str] = {"dummy_plane"}
 """Internal names that mean 'no real vehicle yet', lower-cased for comparison."""
 
@@ -72,4 +74,4 @@ def encyclopedia_image_url(vehicle_id: str) -> str:
     """
     if not _usable(vehicle_id):
         return ""
-    return _ENCYCLOPEDIA_BASE + vehicle_id + _ENCYCLOPEDIA_SUFFIX
+    return _ENCYCLOPEDIA_BASE + quote(vehicle_id, safe="") + _ENCYCLOPEDIA_SUFFIX

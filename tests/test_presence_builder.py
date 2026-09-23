@@ -274,7 +274,47 @@ class TestSmallImage:
         assert payload.small_image is None
 
 
-class TestShowMapFlag:
+class TestDiscordMinimumFieldLength:
+    """Discord rejects details/state text shorter than 2 characters."""
+
+    def test_single_character_mode_falls_back_to_default_details(self):
+        state = GameState(activity=Activity.LOADING, army=Army.AIR, mode="X")
+        payload = build_presence(state)
+        assert len(payload.details) >= 2
+        assert payload.details == "War Thunder"
+
+    def test_single_character_vehicle_name_falls_back_to_default_state(self):
+        # Activity.UNKNOWN uses the raw vehicle_name verbatim as the state
+        # text, so a one-character name reaches build_presence() unpadded.
+        state = GameState(activity=Activity.UNKNOWN, vehicle_name="X")
+        payload = build_presence(state)
+        assert len(payload.state) >= 2
+
+
+class TestSmallImageUrlSafety:
+    def test_vehicle_id_is_url_quoted(self):
+        state = GameState(
+            activity=Activity.IN_MATCH,
+            army=Army.AIR,
+            vehicle_id="us/m1 abrams#1",
+            vehicle_name="ABRAMS",
+        )
+        payload = build_presence(state)
+        assert payload.small_image is not None
+        assert " " not in payload.small_image
+        assert "/m1" not in payload.small_image  # the raw slash must be quoted
+        assert "us%2Fm1%20abrams%231" in payload.small_image
+
+    def test_small_image_dropped_when_url_too_long(self):
+        state = GameState(
+            activity=Activity.IN_MATCH,
+            army=Army.AIR,
+            vehicle_id="x" * 300,
+            vehicle_name="HUGE ID",
+        )
+        payload = build_presence(state)
+        assert payload.small_image is None
+        assert payload.small_text is None
     def test_map_hidden_when_show_map_false(self):
         state = GameState(
             activity=Activity.IN_MATCH,
