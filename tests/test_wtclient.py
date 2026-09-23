@@ -441,3 +441,24 @@ def test_identify_map_close_second_place_same_name_is_not_ambiguous():
     with patch("wtrpc.wtclient.maps", fake_maps):
         result = client.identify_map(probe)
         assert result == "Second Battle of El Alamein"
+
+
+def test_identify_map_a_second_variant_of_the_best_map_does_not_hide_a_rival():
+    """A at 0, A again at 1, B at 1: the runner-up that matters is B."""
+    client = WarThunderClient()
+
+    from wtrpc.phash import average_hash
+
+    probe = Image.new("RGB", (64, 64), (5, 5, 5))
+    exact_hash = average_hash(probe)
+    same_map_variant = format(int(exact_hash, 16) ^ 0b01, "016x")
+    rival = format(int(exact_hash, 16) ^ 0b10, "016x")
+
+    meta = {"ULHC_lat": 0.0, "ULHC_lon": 0.0, "size_km": 65}
+    fake_maps = {
+        exact_hash: {"name": "Sinai", **meta},
+        same_map_variant: {"name": "Sinai", **meta},
+        rival: {"name": "Sands_of_Sinai", **meta},
+    }
+    with patch("wtrpc.wtclient.maps", fake_maps):
+        assert client.identify_map(probe) == ""

@@ -198,26 +198,23 @@ class WarThunderClient:
 
         image_hash = average_hash(image)
 
-        best_name = ""
-        best_distance: int | None = None
-        second_distance: int | None = None
-        second_name = ""
+        # Several hashes can belong to one map, so rank maps, not hashes:
+        # otherwise a second variant of the best map takes the runner-up slot
+        # and hides a different map just as close.
+        closest: dict[str, int] = {}
         for known_hash, meta in maps.items():
             distance = hamming_distance(image_hash, known_hash)
-            if best_distance is None or distance < best_distance:
-                second_distance, second_name = best_distance, best_name
-                best_distance, best_name = distance, meta["name"]
-            elif second_distance is None or distance < second_distance:
-                second_distance, second_name = distance, meta["name"]
-
-        if best_distance is None or best_distance > _MAP_MATCH_THRESHOLD:
+            name = meta["name"]
+            if name not in closest or distance < closest[name]:
+                closest[name] = distance
+        if not closest:
             return ""
 
-        if (
-            second_distance is not None
-            and second_name != best_name
-            and second_distance - best_distance <= 1
-        ):
+        ranked = sorted(closest.items(), key=lambda item: item[1])
+        best_name, best_distance = ranked[0]
+        if best_distance > _MAP_MATCH_THRESHOLD:
+            return ""
+        if len(ranked) > 1 and ranked[1][1] - best_distance <= 1:
             return ""
 
         return best_name.replace("_", " ")
