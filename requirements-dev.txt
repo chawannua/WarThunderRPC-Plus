@@ -3,4 +3,3 @@ pytest>=8.0.0
 imagehash>=4.3.1
 pyinstaller>=6.0.0
 pytesseract>=0.3.10
-mss>=9.0.1

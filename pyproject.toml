@@ -20,7 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0", "imagehash>=4.3.1", "pyinstaller>=6.0.0"]
 # The weapon HUD reader; also needs the Tesseract binary, which pip cannot install.
-ocr = ["pytesseract>=0.3.10", "mss>=9.0.1"]
+ocr = ["pytesseract>=0.3.10"]
 
 [project.scripts]
 warthunderrpc-plus = "wtrpc.__main__:main"

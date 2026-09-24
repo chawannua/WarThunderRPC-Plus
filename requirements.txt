@@ -3,10 +3,5 @@ requests>=2.31.0
 pillow>=10.0.0
 
 # Optional: only needed for the weapon HUD OCR feature (show_weapon).
-# Tesseract itself is a separate install that pip cannot do.
-#
-# mss matters more than it looks: without it the screen grab falls back to
-# PIL.ImageGrab, which captures through GDI and can pull a game running in
-# exclusive fullscreen out of the foreground.
+# Also requires the Tesseract binary itself, which pip cannot install.
 # pytesseract>=0.3.10
-# mss>=9.0.1

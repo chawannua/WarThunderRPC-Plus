@@ -119,9 +119,7 @@ An asset key only resolves against the application that owns it, so a new `clien
 
 ### Reading the weapon off the screen
 
-The game does not expose the selected weapon or shell anywhere in its API — see *Known limits*. With `show_weapon` enabled and [Tesseract](https://github.com/tesseract-ocr/tesseract) installed (`winget install tesseract-ocr.tesseract`, plus `pip install pytesseract mss`), the HUD can be read directly instead.
-
-Install `mss` even though it looks optional. Without it the screen grab falls back to `PIL.ImageGrab`, which captures through GDI and can pull a game running in exclusive fullscreen out of the foreground.
+The game does not expose the selected weapon or shell anywhere in its API — see *Known limits*. With `show_weapon` enabled and [Tesseract](https://github.com/tesseract-ocr/tesseract) installed (`winget install tesseract-ocr.tesseract`, plus `pip install pytesseract`), the HUD can be read directly instead.
 
 It works, and it is genuinely limited. Aircraft weapon names are drawn in the top-left block; shell names only in the gunner sight. Neither is on screen all the time, so the last good reading is kept rather than blanking the status. For ground vehicles the loadout from the profile save fills the gap, and in practice that is the reliable source while OCR is the bonus.
 
