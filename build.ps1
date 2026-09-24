@@ -96,8 +96,15 @@ foreach ($module in @("numpy", "pandas", "scipy", "matplotlib", "tkinter",
 # Bundle pytesseract only if it's actually available in this environment;
 # it's an optional dependency (weapon-HUD OCR) that PyInstaller's static
 # analysis can't see through the try/except import in wtrpc/weapon_ocr.py.
+#
+# Under "Stop", Windows PowerShell 5.1 turns the ImportError on stderr into a
+# terminating NativeCommandError even with 2>$null, which aborted the build
+# instead of skipping the module.
+$ErrorActionPreference = "Continue"
 python -c "import pytesseract" 2>$null
-if ($LASTEXITCODE -eq 0) {
+$probeExit = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+if ($probeExit -eq 0) {
     Write-Host "pytesseract is importable; bundling it."
     $pyiArgs += @("--hidden-import", "pytesseract")
 } else {
