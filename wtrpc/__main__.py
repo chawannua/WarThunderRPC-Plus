@@ -209,7 +209,11 @@ class Poller:
         # the hangar (or when the game goes away).
         self._match_open = False
         self._match_started_at: int | None = None
-        self.matches_finished = 0
+        # Set when the map goes away while a match is open. A hangar stop
+        # shorter than the debounce never commits HANGAR, so without this the
+        # next battle reads as a respawn in the old one and inherits its kill
+        # count, clock and mode. Respawns keep the map, so they never set it.
+        self._left_map = False
         self._weapon_checked_at = 0.0
         self._shell_checked_at = 0.0
         # A single stalled/garbled /indicators response looks identical to
@@ -367,6 +371,10 @@ class Poller:
         if activity is self.activity:
             self._candidate = None
             self._candidate_count = 0
+            if activity is Activity.IN_MATCH:
+                # Still in the same battle: the map blinking out for a poll
+                # was noise, not the end of the match.
+                self._left_map = False
             return
 
         if activity is self._candidate:
@@ -400,19 +408,20 @@ class Poller:
         if activity not in _FLYING_ACTIVITIES or previous not in _FLYING_ACTIVITIES:
             self.analyzer.reset()
         if activity is Activity.IN_MATCH:
-            if self._match_open:
+            if self._match_open and not self._left_map:
                 # Back from the respawn screen: same match, same clock.
                 self.activity_since = self._match_started_at
             else:
                 self._match_open = True
+                self._left_map = False
+                self.match_mode = ""
                 self._match_started_at = self.activity_since
                 # HUD message ids restart with each match, so a stale cursor
                 # would skip the whole new feed and report zero kills all match.
                 self.killfeed.reset()
         elif activity in (Activity.HANGAR, Activity.UNKNOWN):
-            if self._match_open and activity is Activity.HANGAR:
-                self.matches_finished += 1
             self._match_open = False
+            self._left_map = False
             # The next sortie may bring a different belt or the same tank
             # fresh from repair, so nothing per-vehicle survives the hangar.
             self._ground_vehicle = ""
@@ -459,6 +468,8 @@ class Poller:
             bool(map_info.get("valid")) if map_info is not None else self.last_in_map
         )
         self.last_in_map = in_map
+        if map_info is not None and not in_map and self._match_open:
+            self._left_map = True
         vehicle_valid = bool(indicators.get("valid"))
 
         raw_type = str(indicators.get("type") or "")

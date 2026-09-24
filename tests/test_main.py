@@ -1046,32 +1046,33 @@ class TestRespawnKeepsTheMatch:
         poller.killfeed.reset.assert_called_once()
 
 
-class TestMatchFinished:
-    def test_returning_to_the_hangar_after_a_match_counts_one_finished_match(self, monkeypatch):
+class TestMatchLifetime:
+    def test_a_match_survives_respawns_and_closes_in_the_hangar(self, monkeypatch):
         monkeypatch.setattr("wtrpc.__main__.read_loadout", lambda _v: [])
         client = _match_client()
         poller = make_poller()
         poller.client = client
         _drive(poller)
-        assert poller.matches_finished == 0
+        assert poller._match_open
 
         _respawn(poller, client)
-        assert poller.matches_finished == 0
+        assert poller._match_open
 
         client.map_info.return_value = {"valid": False}
         _drive(poller)
-        assert poller.matches_finished == 1
+        assert not poller._match_open
 
-    def test_leaving_a_test_drive_is_not_a_finished_match(self):
+    def test_a_test_drive_never_opens_a_match(self):
         client = _client_mock(in_map=True, vehicle_valid=True)
         poller = make_poller()
         poller.client = client
         _drive(poller)
         assert poller.activity is Activity.TEST_DRIVE
+        assert not poller._match_open
 
         client.map_info.return_value = {"valid": False}
         _drive(poller)
-        assert poller.matches_finished == 0
+        assert not poller._match_open
 
 
 class TestPerVehicleStateIsNotStale:
@@ -1230,3 +1231,155 @@ class TestLogging:
                 if handler not in before:
                     root.removeHandler(handler)
                     handler.close()
+
+
+class TestShortHangarVisitStartsANewMatch:
+    """A hangar stop shorter than the debounce must still end the match.
+
+    Found in review after the per-match restart was removed: a single-poll
+    hangar visit is discarded by the two-poll debounce, the following load
+    screen does not close the match, and the next battle is taken for a
+    respawn in the old one -- inheriting its kill count, clock and mode
+    label. At the default 3 s poll that is any hangar stay under ~6 s, which
+    a squadmate on an instant queue hits routinely. The old restart never
+    covered this either, but the process now lives for the whole session.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ticking_clock(self, monkeypatch):
+        # Every poll lands in a new second, so "same clock" and "new clock"
+        # are distinguishable instead of coinciding within one real second.
+        import itertools
+        import wtrpc.__main__ as m
+
+        clock = itertools.count(1_000_000, 10)
+        monkeypatch.setattr(m.time, "time", lambda: next(clock))
+
+    @staticmethod
+    def _poller():
+        import wtrpc.__main__ as m
+        from wtrpc.config import Config
+
+        m.read_loadout = lambda v: []
+        poller = m.Poller(Config(player_name="Me", show_kills=True, show_map=False))
+        client = MagicMock(spec=WarThunderClient)
+        client.available = True
+        poller.client = client
+        return poller, client
+
+    @staticmethod
+    def _at(poller, client, *, in_map, valid=True, army="air", vt="f_16a",
+            obj="", markers=None, polls=2):
+        client.indicators.return_value = {"valid": valid, "type": vt, "army": army}
+        client.map_info.return_value = {"valid": in_map}
+        client.mission.return_value = (
+            {"objectives": [{"text": obj, "primary": True}]} if obj else None
+        )
+        client.map_obj.return_value = markers
+        client.state.return_value = {}
+        state = None
+        for _ in range(polls):
+            state = poller.poll()
+        return state
+
+    def test_new_match_after_a_one_poll_hangar_is_really_new(self):
+        poller, client = self._poller()
+        feed = []
+        client.hudmsg.side_effect = lambda e, d: {
+            "events": [], "damage": [x for x in feed if x["id"] > d]
+        }
+
+        self._at(poller, client, in_map=False)
+        feed += [{"id": i, "msg": f"Me (f_16a) destroyed X{i}"} for i in range(1, 8)]
+        first = self._at(
+            poller, client, in_map=True, obj="Capture the airfield",
+            markers=[{"type": "respawn_base_fighter"}], polls=3,
+        )
+        assert first.kills == 7
+
+        # One poll in the hangar -- under the debounce -- then straight into
+        # a load screen and a different, ground, battle.
+        self._at(poller, client, in_map=False, polls=1)
+        self._at(poller, client, in_map=True, valid=False, polls=2)
+        feed[:] = [{"id": 1, "msg": "Me (M1A2 Abrams) destroyed Y"}]
+        second = self._at(
+            poller, client, in_map=True, army="tank", vt="us_m1a2_abrams",
+            obj="Capture the point", markers=[{"type": "respawn_base_tank"}],
+            polls=3,
+        )
+
+        assert second.kills == 1, "the new match must not inherit 7 kills"
+        assert second.mode.startswith("Ground"), (
+            f"a ground battle must not keep the air label, got {second.mode!r}"
+        )
+        assert second.match_started_at > first.match_started_at, (
+            "the clock must restart"
+        )
+
+    def test_a_real_respawn_still_keeps_the_match(self):
+        """The fix must not break respawns, which keep map_info valid."""
+        poller, client = self._poller()
+        feed = [{"id": i, "msg": f"Me (f_16a) destroyed X{i}"} for i in range(1, 4)]
+        client.hudmsg.side_effect = lambda e, d: {
+            "events": [], "damage": [x for x in feed if x["id"] > d]
+        }
+        self._at(poller, client, in_map=False)
+        before = self._at(
+            poller, client, in_map=True, obj="Capture the airfield",
+            markers=[{"type": "respawn_base_fighter"}], polls=3,
+        )
+        # Respawn: load screen while still on the map.
+        self._at(poller, client, in_map=True, valid=False, polls=2)
+        after = self._at(
+            poller, client, in_map=True, obj="Capture the airfield",
+            markers=[{"type": "respawn_base_fighter"}], polls=3,
+        )
+        assert after.kills == 3
+        assert after.match_started_at == before.match_started_at
+
+    def test_a_one_poll_map_blink_mid_match_is_not_a_new_match(self):
+        """A lone valid:false read that never leaves the match is noise.
+
+        Without clearing the flag, the blink would linger and the player's
+        next genuine respawn would be taken for a new match.
+        """
+        poller, client = self._poller()
+        feed = [{"id": i, "msg": f"Me (f_16a) destroyed X{i}"} for i in range(1, 4)]
+        client.hudmsg.side_effect = lambda e, d: {
+            "events": [], "damage": [x for x in feed if x["id"] > d]
+        }
+        air = dict(obj="Capture the airfield", markers=[{"type": "respawn_base_fighter"}])
+        self._at(poller, client, in_map=False)
+        before = self._at(poller, client, in_map=True, polls=3, **air)
+        self._at(poller, client, in_map=False, polls=1)      # the blink
+        self._at(poller, client, in_map=True, polls=2, **air)
+        self._at(poller, client, in_map=True, valid=False, polls=2)  # respawn
+        after = self._at(poller, client, in_map=True, polls=3, **air)
+        assert after.kills == 3
+        assert after.match_started_at == before.match_started_at
+
+    def test_mode_does_not_survive_the_game_going_away(self):
+        """The unreachable path never reaches the mode resolver, so the latch
+        has to be dropped when the next match opens, not when it closes."""
+        poller, client = self._poller()
+        client.hudmsg.return_value = {"events": [], "damage": []}
+        self._at(poller, client, in_map=False)
+        air = self._at(
+            poller, client, in_map=True, obj="Capture the airfield",
+            markers=[{"type": "respawn_base_fighter"}], polls=3,
+        )
+        assert not air.mode.startswith("Ground")
+
+        client.available = False
+        client.indicators.return_value = None
+        client.indicators.side_effect = None
+        for _ in range(4):
+            poller.poll()
+        client.available = True
+
+        ground = self._at(
+            poller, client, in_map=True, army="tank", vt="us_m1a2_abrams",
+            obj="Capture the point", markers=[{"type": "respawn_base_tank"}],
+            polls=3,
+        )
+        assert ground.mode.startswith("Ground"), ground.mode
