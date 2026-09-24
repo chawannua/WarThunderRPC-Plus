@@ -214,6 +214,9 @@ class Poller:
         # next battle reads as a respawn in the old one and inherits its kill
         # count, clock and mode. Respawns keep the map, so they never set it.
         self._left_map = False
+        # A load screen seen since the map went away: the player went on to a
+        # new battle rather than blinking straight back into the old one.
+        self._reloaded = False
         self._weapon_checked_at = 0.0
         self._shell_checked_at = 0.0
         # A single stalled/garbled /indicators response looks identical to
@@ -368,13 +371,24 @@ class Poller:
         across consecutive polls costs one poll of latency on a real transition
         and absorbs the spurious ones entirely.
         """
+        if activity is Activity.LOADING and self._left_map:
+            self._reloaded = True
         if activity is self.activity:
             self._candidate = None
             self._candidate_count = 0
-            if activity is Activity.IN_MATCH:
-                # Still in the same battle: the map blinking out for a poll
-                # was noise, not the end of the match.
-                self._left_map = False
+            if activity is Activity.IN_MATCH and self._left_map:
+                if self._reloaded:
+                    # Off the map and through a load screen, both too brief to
+                    # commit: a new battle with no transition to hang it on,
+                    # so nothing below resets the flight window either.
+                    log.info("New match after a short hangar stop")
+                    self.activity_since = int(time.time())
+                    self.analyzer.reset()
+                    self._open_match()
+                else:
+                    # Straight back into the same battle: the map blinking
+                    # out for a poll was noise, not the end of the match.
+                    self._left_map = False
             return
 
         if activity is self._candidate:
@@ -412,21 +426,36 @@ class Poller:
                 # Back from the respawn screen: same match, same clock.
                 self.activity_since = self._match_started_at
             else:
-                self._match_open = True
-                self._left_map = False
-                self.match_mode = ""
-                self._match_started_at = self.activity_since
-                # HUD message ids restart with each match, so a stale cursor
-                # would skip the whole new feed and report zero kills all match.
-                self.killfeed.reset()
+                self._open_match()
         elif activity in (Activity.HANGAR, Activity.UNKNOWN):
             self._match_open = False
             self._left_map = False
-            # The next sortie may bring a different belt or the same tank
-            # fresh from repair, so nothing per-vehicle survives the hangar.
-            self._ground_vehicle = ""
-            self._loadout_vehicle = ""
-            self._loadout_attempt = ""
+            self._reloaded = False
+            self.match_mode = ""
+            self._forget_vehicle()
+
+    def _open_match(self) -> None:
+        """Start a match clocked from ``activity_since`` with nothing carried over."""
+        if self._left_map:
+            # The hangar stop was too brief to commit, so its reset never ran.
+            self._forget_vehicle()
+            self.weapon = ""
+            self._weapon_checked_at = 0.0
+        self._match_open = True
+        self._left_map = False
+        self._reloaded = False
+        self.match_mode = ""
+        self._match_started_at = self.activity_since
+        # HUD message ids restart with each match, so a stale cursor would
+        # skip the whole new feed and report zero kills all match.
+        self.killfeed.reset()
+
+    def _forget_vehicle(self) -> None:
+        # The next sortie may bring a different belt or the same tank fresh
+        # from repair, so nothing per-vehicle survives the hangar.
+        self._ground_vehicle = ""
+        self._loadout_vehicle = ""
+        self._loadout_attempt = ""
 
     def poll(self) -> GameState | None:
         """Build one snapshot, or ``None`` when War Thunder is unreachable.

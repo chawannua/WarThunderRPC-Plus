@@ -1254,14 +1254,16 @@ class TestShortHangarVisitStartsANewMatch:
 
         clock = itertools.count(1_000_000, 10)
         monkeypatch.setattr(m.time, "time", lambda: next(clock))
+        monkeypatch.setattr(m, "read_loadout", lambda _v: [])
 
     @staticmethod
-    def _poller():
+    def _poller(**cfg):
         import wtrpc.__main__ as m
         from wtrpc.config import Config
 
-        m.read_loadout = lambda v: []
-        poller = m.Poller(Config(player_name="Me", show_kills=True, show_map=False))
+        poller = m.Poller(
+            Config(player_name="Me", show_kills=True, show_map=False, **cfg)
+        )
         client = MagicMock(spec=WarThunderClient)
         client.available = True
         poller.client = client
@@ -1383,3 +1385,139 @@ class TestShortHangarVisitStartsANewMatch:
             polls=3,
         )
         assert ground.mode.startswith("Ground"), ground.mode
+
+    def test_one_hangar_poll_and_one_load_poll_is_still_a_new_match(self):
+        """Neither stop lasts long enough to commit, so IN_MATCH never stops
+        being the committed state -- the new battle has to be recognised
+        without a transition to hang it on."""
+        poller, client = self._poller()
+        feed = [{"id": i, "msg": f"Me (f_16a) destroyed X{i}"} for i in range(1, 4)]
+        client.hudmsg.side_effect = lambda e, d: {
+            "events": [], "damage": [x for x in feed if x["id"] > d]
+        }
+        self._at(poller, client, in_map=False)
+        first = self._at(
+            poller, client, in_map=True, obj="Capture the airfield",
+            markers=[{"type": "respawn_base_fighter"}], polls=3,
+        )
+        self._at(poller, client, in_map=False, polls=1)
+        self._at(poller, client, in_map=True, valid=False, polls=1)
+        resets = []
+        real_reset = poller.analyzer.reset
+        poller.analyzer.reset = lambda: resets.append(1) or real_reset()
+        feed[:] = [{"id": 1, "msg": "Me (M1A2 Abrams) destroyed Y"}]
+        second = self._at(
+            poller, client, in_map=True, army="tank", vt="us_m1a2_abrams",
+            obj="Capture the point", markers=[{"type": "respawn_base_tank"}],
+            polls=3,
+        )
+        assert second.kills == 1
+        assert second.mode.startswith("Ground"), second.mode
+        assert second.match_started_at > first.match_started_at
+        assert resets, "the last match's flight window must not carry over"
+
+    def test_the_loadout_is_reread_after_a_short_hangar_stop(self, monkeypatch):
+        """Same tank, new belt: nothing per-vehicle survives the hangar, even
+        a stop too short to commit."""
+        import wtrpc.__main__ as m
+
+        belts = iter([["first"], ["second"]])
+        monkeypatch.setattr(m, "read_loadout", lambda _v: next(belts, ["second"]))
+        monkeypatch.setattr(m, "loadout_label", lambda l: l[0] if l else "")
+        poller, client = self._poller()
+        client.hudmsg.return_value = {"events": [], "damage": []}
+        tank = dict(
+            army="tank", vt="us_m1a2_abrams", obj="Capture the point",
+            markers=[{"type": "respawn_base_tank"}],
+        )
+        self._at(poller, client, in_map=False)
+        self._at(poller, client, in_map=True, polls=3, **tank)
+        assert poller.loadout == "first"
+
+        self._at(poller, client, in_map=False, polls=1)
+        self._at(poller, client, in_map=True, valid=False, polls=2)
+        self._at(poller, client, in_map=True, polls=3, **tank)
+        assert poller.loadout == "second"
+
+    def test_no_stale_mode_on_the_first_poll_after_the_game_returns(self):
+        poller, client = self._poller()
+        client.hudmsg.return_value = {"events": [], "damage": []}
+        self._at(poller, client, in_map=False)
+        self._at(
+            poller, client, in_map=True, obj="Capture the airfield",
+            markers=[{"type": "respawn_base_fighter"}], polls=3,
+        )
+        client.available = False
+        client.indicators.return_value = None
+        for _ in range(4):
+            poller.poll()
+        client.available = True
+
+        first_back = self._at(
+            poller, client, in_map=True, army="tank", vt="us_m1a2_abrams",
+            obj="Capture the point", markers=None, polls=1,
+        )
+        assert not first_back.mode.startswith("Air"), first_back.mode
+
+    def test_a_test_drive_turning_into_the_match_keeps_the_flight_window(self):
+        """Battles often read as a test flight until objectives publish; the
+        dogfight window must survive that switch, as it always has."""
+        poller, client = self._poller()
+        client.hudmsg.return_value = {"events": [], "damage": []}
+        self._at(poller, client, in_map=False)
+        self._at(poller, client, in_map=True, polls=2)
+        assert poller.activity is Activity.TEST_DRIVE
+
+        resets = []
+        real_reset = poller.analyzer.reset
+        poller.analyzer.reset = lambda: resets.append(1) or real_reset()
+        self._at(
+            poller, client, in_map=True, obj="Capture the airfield",
+            markers=[{"type": "respawn_base_fighter"}], polls=3,
+        )
+        assert poller.activity is Activity.IN_MATCH
+        assert not resets
+
+    def test_a_test_drive_read_between_load_and_battle_is_still_a_new_match(self):
+        """Before objectives publish, the new battle reads as a test flight;
+        that must not be mistaken for a blink back into the old match."""
+        poller, client = self._poller()
+        feed = [{"id": i, "msg": f"Me (f_16a) destroyed X{i}"} for i in range(1, 4)]
+        client.hudmsg.side_effect = lambda e, d: {
+            "events": [], "damage": [x for x in feed if x["id"] > d]
+        }
+        self._at(poller, client, in_map=False)
+        first = self._at(
+            poller, client, in_map=True, obj="Capture the airfield",
+            markers=[{"type": "respawn_base_fighter"}], polls=3,
+        )
+        self._at(poller, client, in_map=False, polls=1)
+        self._at(poller, client, in_map=True, valid=False, polls=1)
+        self._at(poller, client, in_map=True, polls=1)  # no objectives yet
+        feed[:] = [{"id": 1, "msg": "Me (f_16a) destroyed Y"}]
+        second = self._at(
+            poller, client, in_map=True, obj="Capture the airfield",
+            markers=[{"type": "respawn_base_fighter"}], polls=3,
+        )
+        assert second.kills == 1
+        assert second.match_started_at > first.match_started_at
+
+    def test_the_old_weapon_does_not_carry_into_the_new_match(self, monkeypatch):
+        import itertools
+        import wtrpc.__main__ as m
+
+        ticks = itertools.count(0, 1000)
+        monkeypatch.setattr(m.time, "monotonic", lambda: float(next(ticks)))
+        readings = iter(["OLD-AAM"])
+        monkeypatch.setattr(m, "read_selected_weapon", lambda _b: next(readings, ""))
+        poller, client = self._poller(show_weapon=True)
+        client.hudmsg.return_value = {"events": [], "damage": []}
+        air = dict(obj="Capture the airfield", markers=[{"type": "respawn_base_fighter"}])
+        self._at(poller, client, in_map=False)
+        self._at(poller, client, in_map=True, polls=3, **air)
+        assert poller.weapon == "OLD-AAM"
+
+        self._at(poller, client, in_map=False, polls=1)
+        self._at(poller, client, in_map=True, valid=False, polls=1)
+        state = self._at(poller, client, in_map=True, polls=3, **air)
+        assert state.weapon == ""
