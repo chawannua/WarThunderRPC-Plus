@@ -427,6 +427,39 @@ class TestAvailable:
         reset_tesseract_cache()
         assert available() is False, "after reset the fresh state must be reprobed"
 
+    def test_a_failed_probe_is_retried_after_a_while(self, monkeypatch):
+        """The managed app now lives for the whole game session, so a
+        Tesseract installed after launch must be picked up without a restart
+        -- but a missing binary must not respawn the probe every poll."""
+        import time
+
+        clock = [1000.0]
+        monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+        calls = []
+        version = [None]
+
+        def get_version():
+            calls.append(1)
+            if version[0] is None:
+                raise FileNotFoundError("tesseract not found")
+            return version[0]
+
+        monkeypatch.setattr("wtrpc.weapon_ocr._HAVE_PYTESSERACT", True)
+        monkeypatch.setattr(
+            "wtrpc.weapon_ocr.pytesseract",
+            types.SimpleNamespace(get_tesseract_version=get_version),
+        )
+        assert available() is False
+        probes = len(calls)
+
+        version[0] = "5.3.0"  # installed while the app runs
+        clock[0] += 60
+        assert available() is False, "a minute later is still within the backoff"
+        assert len(calls) == probes
+
+        clock[0] += 300
+        assert available() is True
+
 
 class TestLocateTesseractRestoresCommand:
     def test_original_tesseract_cmd_restored_when_no_candidate_works(self, monkeypatch, tmp_path):

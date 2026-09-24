@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 from PIL import Image, ImageOps
@@ -111,6 +112,12 @@ def _locate_tesseract() -> bool:
 #: does not spawn `tesseract --version` on every call. ``None`` means "not
 #: probed yet".
 _tesseract_located: bool | None = None
+_tesseract_probed_at = 0.0
+
+#: How long a failed probe is trusted. The managed app runs for the whole game
+#: session, so an install made after launch has to be noticed eventually; a
+#: success never needs rechecking.
+_TESSERACT_RETRY_S = 300.0
 
 
 def reset_tesseract_cache() -> None:
@@ -150,12 +157,16 @@ def available() -> bool:
     The underlying probe spawns ``tesseract --version`` as a subprocess, so
     the result is memoised at module level after the first call instead of
     being re-run on every check; call ``reset_tesseract_cache()`` to force a
-    fresh probe.
+    fresh probe. A failure is retried after ``_TESSERACT_RETRY_S``.
     """
-    global _tesseract_located
-    if _tesseract_located is not None:
+    global _tesseract_located, _tesseract_probed_at
+    if _tesseract_located or (
+        _tesseract_located is False
+        and time.monotonic() - _tesseract_probed_at < _TESSERACT_RETRY_S
+    ):
         return _tesseract_located
 
+    _tesseract_probed_at = time.monotonic()
     if not _HAVE_PYTESSERACT:
         log.debug("pytesseract is not installed; weapon OCR unavailable")
         _tesseract_located = False
