@@ -603,7 +603,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--managed",
         action="store_true",
-        help="run under the watcher: exit after each match and once the game closes",
+        help="run under the watcher: exit once the game closes",
     )
     args = parser.parse_args(argv)
 
@@ -660,11 +660,6 @@ def main(argv: list[str] | None = None) -> int:
 
             seen_game = True
             offline_since = None
-            if args.managed and poller.matches_finished:
-                # A new process per match keeps a long session from carrying
-                # any state, or any leak, from one match into the next.
-                log.info("Match finished; exiting for a fresh start")
-                break
 
             if warned_offline:
                 log.info("War Thunder detected")

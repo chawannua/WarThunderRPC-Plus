@@ -66,7 +66,7 @@ Download `WarThunderRPC-Plus-Setup-<version>.exe` from the releases page and run
 
 - A small watcher (`wtrpc-watcher.exe`, about 1 MB of memory) starts with Windows and sits idle.
 - When War Thunder (`aces.exe`) starts, it launches the presence app; when the game closes, the app goes with it.
-- After every match the app exits and is started again, so each match begins from a clean slate.
+- The app then runs for the whole session. It does not restart between matches: every relaunch disturbed a game running in exclusive fullscreen, and the per-match state is reset in place anyway.
 
 It installs to `%LOCALAPPDATA%\Programs\WarThunderRPC-Plus`. Remove it from *Settings → Apps*, which also stops the watcher and removes it from startup.
 
@@ -81,7 +81,7 @@ pip install -r requirements.txt
 python -m wtrpc
 ```
 
-Start it whenever you like — before or after War Thunder, before or after Discord. It waits for both and reconnects on its own. `-v` turns on debug logging; a rolling log is kept beside the config file. `--managed` is what the watcher uses: exit after each finished match and once the game has closed.
+Start it whenever you like — before or after War Thunder, before or after Discord. It waits for both and reconnects on its own. `-v` turns on debug logging; a rolling log is kept beside the config file. `--managed` is what the watcher uses: exit once the game has closed, and leave the rest to the watcher.
 
 ## Configuration
 

@@ -1177,11 +1177,20 @@ class TestManagedMode:
         monkeypatch.setattr(m.config_module, "load", lambda _p: config_module.Config())
         return m, presence
 
-    def test_managed_exits_after_a_finished_match(self, monkeypatch):
-        m, presence = self._main_with(monkeypatch, [MagicMock(), "finish"] + [MagicMock()] * 5)
+    def test_managed_keeps_running_across_matches(self, monkeypatch):
+        """Restarting per match was visible to the player and unnecessary.
+
+        Each relaunch flashed a new process while the game held the
+        foreground, so the player had to alt-tab back after every battle.
+        Nothing required it: the per-match state -- kill cursor, flight
+        window, match clock, mode latch, per-vehicle loadout -- is all reset
+        in place when the hangar is reached.
+        """
+        m, _ = self._main_with(
+            monkeypatch, [MagicMock(), "finish"] + [MagicMock()] * 5
+        )
         assert m.main(["--managed"]) == 0
-        assert self.polls_made == 2
-        presence.close.assert_called_once()
+        assert self.polls_made == 8, "a finished match must not end the process"
 
     def test_managed_exits_once_the_game_has_been_gone_a_while(self, monkeypatch):
         # OFFLINE_POLL_INTERVAL_S is 5 s, so the 10 s grace is spent within 3 polls.
