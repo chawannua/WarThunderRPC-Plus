@@ -93,15 +93,23 @@ foreach ($module in @("numpy", "pandas", "scipy", "matplotlib", "tkinter",
     $pyiArgs += @("--exclude-module", $module)
 }
 
-# Bundle pytesseract only if it's actually available in this environment;
-# it's an optional dependency (weapon-HUD OCR) that PyInstaller's static
-# analysis can't see through the try/except import in wtrpc/weapon_ocr.py.
-python -c "import pytesseract" 2>$null
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "pytesseract is importable; bundling it."
-    $pyiArgs += @("--hidden-import", "pytesseract")
-} else {
-    Write-Host "pytesseract not importable; skipping (weapon OCR will be unavailable in this build)."
+# Optional dependencies of the weapon-HUD OCR feature. Both are imported
+# inside a try/except at call time, which PyInstaller's static analysis
+# cannot see, so each needs naming explicitly -- and only when it is actually
+# importable here, so a build machine without them still produces a working
+# app with OCR switched off.
+#
+# mss is easy to dismiss as a nicety and is not: without it the screen grab
+# falls back to PIL.ImageGrab, which captures through GDI and can pull a game
+# running in exclusive fullscreen out of the foreground.
+foreach ($optional in @("pytesseract", "mss")) {
+    python -c "import $optional" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "$optional is importable; bundling it."
+        $pyiArgs += @("--hidden-import", $optional)
+    } else {
+        Write-Host "$optional not importable; skipping."
+    }
 }
 
 python @pyiArgs
